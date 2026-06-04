@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -119,27 +120,33 @@ func TestParseSSLegacyURI(t *testing.T) {
 func TestBackendProtocolSort(t *testing.T) {
 	nodes := []ProxyBackend{
 		&SSBackend{Tag: "b-ss", Server: "s.example", Port: 8388},
+		&TrojanBackend{Tag: "c-trojan", Server: "t.example", Port: 443},
 		&VMessBackend{Tag: "a-vmess", Server: "v.example", Port: 443},
 		&HY2Backend{Tag: "z-hy2", Server: "h.example", Port: 443},
 	}
 	SortBackendsByProtocol(nodes)
-	if nodes[0].BackendProtocol() != "hy2" || nodes[1].BackendProtocol() != "vmess" || nodes[2].BackendProtocol() != "ss" {
-		t.Fatalf("协议排序错误: %s/%s/%s", nodes[0].BackendProtocol(), nodes[1].BackendProtocol(), nodes[2].BackendProtocol())
+	if nodes[0].BackendProtocol() != "hy2" || nodes[1].BackendProtocol() != "vmess" ||
+		nodes[2].BackendProtocol() != "trojan" || nodes[3].BackendProtocol() != "ss" {
+		t.Fatalf("协议排序错误: %s/%s/%s/%s",
+			nodes[0].BackendProtocol(), nodes[1].BackendProtocol(),
+			nodes[2].BackendProtocol(), nodes[3].BackendProtocol())
 	}
 }
 
-// TestNormalizeStaticBackendsForSaveFlatProtocols 验证静态节点保存支持扁平 HY2、VMess 和 SS。
+// TestNormalizeStaticBackendsForSaveFlatProtocols 验证静态节点保存支持扁平协议。
 func TestNormalizeStaticBackendsForSaveFlatProtocols(t *testing.T) {
 	nodes := []StaticBackend{
 		{Protocol: "hy2", Key: "jp", Server: "hy2.example", Port: 443, Password: "p"},
 		{Protocol: "vmess", Key: "vm", Server: "vm.example", Port: 443, UUID: "u", TLS: true, Transport: "ws", Path: "/ws"},
 		{Protocol: "ss", Key: "ss", Server: "ss.example", Port: 8388, Method: "aes-128-gcm", Password: "p", Plugin: "simple-obfs", PluginOpts: "obfs=http"},
+		{Protocol: "trojan", Key: "tj", Server: "tj.example", Port: 443, Password: "p", SNI: "sni.example", TLS: true, Transport: "ws", Path: "/ws"},
 	}
 	got, err := NormalizeStaticBackendsForSave(nodes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 3 || got[0].Protocol != "hy2" || got[1].Protocol != "vmess" || got[2].Protocol != "ss" {
+	if len(got) != 4 || got[0].Protocol != "hy2" || got[1].Protocol != "vmess" ||
+		got[2].Protocol != "ss" || got[3].Protocol != "trojan" {
 		t.Fatalf("静态协议清洗错误: %+v", got)
 	}
 	if got[1].Security != "auto" || got[1].Password != "" {
@@ -147,6 +154,9 @@ func TestNormalizeStaticBackendsForSaveFlatProtocols(t *testing.T) {
 	}
 	if got[2].Plugin != "obfs-local" || got[2].PluginOpts != "obfs=http" {
 		t.Fatalf("ss 字段清洗错误: %+v", got[2])
+	}
+	if !got[3].TLS || got[3].SNI != "sni.example" || got[3].Transport != "ws" || got[3].Path != "/ws" {
+		t.Fatalf("trojan 字段清洗错误: %+v", got[3])
 	}
 }
 
@@ -156,13 +166,15 @@ func TestSubscriptionCacheEnvelope(t *testing.T) {
 		&HY2Backend{Tag: "hy2-a", Server: "h.example", Port: 443},
 		&VMessBackend{Tag: "vmess-a", Server: "v.example", Port: 443},
 		&SSBackend{Tag: "ss-a", Server: "s.example", Port: 8388, Method: "aes-128-gcm", Password: "p"},
+		&TrojanBackend{Tag: "trojan-a", Server: "t.example", Port: 443, Password: "p", TLS: true},
 	}
 	data := []byte(mustJSON(t, SubscriptionCacheFromBackends(nodes)))
 	got, err := BackendsFromSubscriptionCache(data)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 3 || got[0].BackendProtocol() != "hy2" || got[1].BackendProtocol() != "vmess" || got[2].BackendProtocol() != "ss" {
+	if len(got) != 4 || got[0].BackendProtocol() != "hy2" || got[1].BackendProtocol() != "vmess" ||
+		got[2].BackendProtocol() != "ss" || got[3].BackendProtocol() != "trojan" {
 		t.Fatalf("缓存恢复错误: %+v", got)
 	}
 }
@@ -182,6 +194,27 @@ func TestFetchSubscriptionParsesSS(t *testing.T) {
 	}
 	if skipped != 0 || failed != 0 || len(nodes) != 1 || nodes[0].BackendProtocol() != "ss" {
 		t.Fatalf("ss 订阅解析错误 nodes=%+v skipped=%d failed=%d", nodes, skipped, failed)
+	}
+}
+
+// TestFetchSubscriptionParsesTrojan 验证订阅正文中的 Trojan 节点会进入缓存节点列表。
+func TestFetchSubscriptionParsesTrojan(t *testing.T) {
+	line := "trojan://secret@example.com:443?security=tls&sni=sni.example&type=ws&path=%2Fws&host=host.example#trojan-node"
+	body := base64.StdEncoding.EncodeToString([]byte(line + "\n"))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+	nodes, skipped, failed, err := FetchSubscription(server.Client(), Subscription{Name: "trojan", URL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if skipped != 0 || failed != 0 || len(nodes) != 1 || nodes[0].BackendProtocol() != "trojan" {
+		t.Fatalf("trojan 订阅解析错误 nodes=%+v skipped=%d failed=%d", nodes, skipped, failed)
+	}
+	node := nodes[0].(*TrojanBackend)
+	if !node.TLS || node.SNI != "sni.example" || node.Transport != "ws" || node.Path != "/ws" || node.Host != "host.example" {
+		t.Fatalf("trojan 参数解析错误: %+v", node)
 	}
 }
 
@@ -270,6 +303,34 @@ func TestBuildSingBoxConfigSkipsHostsDNSWhenDisabled(t *testing.T) {
 	}
 	if findMapByString(dns["rules"].([]map[string]any), "server", defaultHostsDNSTag) != nil {
 		t.Fatal("hosts DNS 关闭后不应生成 hosts rule")
+	}
+}
+
+// TestBuildTrojanOutbound 验证 Trojan 节点生成 sing-box 出站配置。
+func TestBuildTrojanOutbound(t *testing.T) {
+	out := BuildTrojanOutbound(TrojanBackend{
+		Tag:       "trojan-a",
+		Server:    "example.com",
+		Port:      443,
+		Password:  "secret",
+		SNI:       "sni.example",
+		TLS:       true,
+		Insecure:  true,
+		Transport: "ws",
+		Path:      "/ws",
+		Host:      "host.example",
+	})
+	if out["type"] != "trojan" || out["server_port"] != 443 || out["password"] != "secret" {
+		t.Fatalf("Trojan 基础字段错误: %+v", out)
+	}
+	tls := out["tls"].(map[string]any)
+	if tls["server_name"] != "sni.example" || tls["insecure"] != true {
+		t.Fatalf("Trojan TLS 字段错误: %+v", tls)
+	}
+	transport := out["transport"].(map[string]any)
+	headers := transport["headers"].(map[string]any)
+	if transport["type"] != "ws" || transport["path"] != "/ws" || headers["Host"] != "host.example" {
+		t.Fatalf("Trojan transport 字段错误: %+v", transport)
 	}
 }
 
@@ -855,5 +916,32 @@ func TestSingBoxPIDsFromProc(t *testing.T) {
 	sort.Ints(got)
 	if strings.Trim(strings.ReplaceAll(fmt.Sprint(got), " ", ","), "[]") != "100" {
 		t.Fatalf("sing-box pid 扫描错误: %+v", got)
+	}
+}
+
+// TestCleanupTunNetworkScriptCoversAggressivePaths 验证强制清理脚本覆盖关键网络残留面。
+func TestCleanupTunNetworkScriptCoversAggressivePaths(t *testing.T) {
+	script := CleanupTunNetworkScript()
+	cmd := exec.Command("sh", "-n")
+	cmd.Stdin = strings.NewReader(script)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("清理脚本语法错误: %v\n%s", err, output)
+	}
+	required := []string{
+		"pkill -KILL -x sing-box",
+		"nft delete table \"$family\" sing-box",
+		"/etc/nftables.d/0-sing-box-auto-redirect.nft",
+		"sing-box-output",
+		"ip -4 route flush table",
+		"ip \"$fam\" rule del pref",
+		"resolvectl revert",
+		"ip link del",
+		"conntrack -F",
+		"systemctl restart NetworkManager",
+	}
+	for _, item := range required {
+		if !strings.Contains(script, item) {
+			t.Fatalf("清理脚本缺少关键片段 %q", item)
+		}
 	}
 }

@@ -31,13 +31,13 @@ interface BackendNode {
   security?: string
   /** VMess 静态节点 alterId。 */
   alter_id?: number
-  /** VMess 静态节点是否启用 TLS。 */
+  /** VMess/Trojan 静态节点是否启用 TLS。 */
   tls?: boolean
-  /** VMess 静态节点传输层类型。 */
+  /** VMess/Trojan 静态节点传输层类型。 */
   transport?: string
-  /** VMess 静态节点 WebSocket/HTTP 路径。 */
+  /** VMess/Trojan 静态节点 WebSocket/HTTP 路径。 */
   path?: string
-  /** VMess 静态节点 WebSocket/HTTP Host 头。 */
+  /** VMess/Trojan 静态节点 WebSocket/HTTP Host 头。 */
   host?: string
   /** Shadowsocks 加密方式。 */
   method?: string
@@ -412,7 +412,7 @@ const helpSections: HelpSection[] = [
   {
     title: 'Backend',
     items: [
-      '静态节点支持扁平配置的 HY2、VMess 和 SS；订阅目前解析 HY2、VMess 和 SS，其它协议先跳过。',
+      '静态节点支持扁平配置的 HY2、VMess、SS 和 Trojan；订阅目前解析 HY2、VMess、SS 和 Trojan，其它协议先跳过。',
       '节点 key 在各自范围内必须唯一；订阅内 key 只要求订阅内唯一，跨订阅可重复。',
       '删除订阅或静态节点时，如果动态组、动态出口或当前出口仍引用，会拒绝保存。',
       '静态节点的新增、修改和删除也都是临时配置，刷新页面前会提示未保存改动。',
@@ -765,6 +765,9 @@ function normalizeStaticProtocol(protocol: string) {
   if (protocol === 'ss') {
     return 'ss'
   }
+  if (protocol === 'trojan') {
+    return 'trojan'
+  }
   return 'hy2'
 }
 
@@ -834,6 +837,16 @@ function emptyStaticForm(): StaticForm {
     method: 'aes-128-gcm',
     plugin: '',
     plugin_opts: '',
+  }
+}
+
+// 适用场景：切换静态节点协议时补齐该协议的常见默认项。
+function updateStaticProtocol(protocol: string) {
+  const nextProtocol = normalizeStaticProtocol(protocol)
+  staticForm.value.protocol = nextProtocol
+  if (nextProtocol === 'trojan') {
+    staticForm.value.port = Number(staticForm.value.port) || 443
+    staticForm.value.tls = true
   }
 }
 
@@ -915,8 +928,8 @@ function saveStaticDraft() {
     pageError.value = '静态节点 server 必填'
     return
   }
-  if (protocol === 'hy2' && !item.password.trim()) {
-    pageError.value = 'HY2 静态节点 password 必填'
+  if ((protocol === 'hy2' || protocol === 'trojan') && !item.password.trim()) {
+    pageError.value = `${protocol.toUpperCase()} 静态节点 password 必填`
     return
   }
   if (protocol === 'vmess' && !item.uuid.trim()) {
@@ -939,17 +952,17 @@ function saveStaticDraft() {
     server: item.server.trim(),
     port: Number(item.port) || 443,
     source: 'static',
-    password: protocol === 'hy2' || protocol === 'ss' ? item.password.trim() : '',
+    password: protocol === 'hy2' || protocol === 'ss' || protocol === 'trojan' ? item.password.trim() : '',
     sni: item.sni.trim(),
     insecure: item.insecure,
     obfs_password: protocol === 'hy2' ? item.obfs_password.trim() : '',
     uuid: protocol === 'vmess' ? item.uuid.trim() : '',
     security: protocol === 'vmess' ? item.security.trim() || 'auto' : '',
     alter_id: protocol === 'vmess' ? Number(item.alter_id) || 0 : 0,
-    tls: protocol === 'vmess' ? item.tls === true : false,
-    transport: protocol === 'vmess' ? item.transport.trim().toLowerCase() : '',
-    path: protocol === 'vmess' ? item.path.trim() : '',
-    host: protocol === 'vmess' ? item.host.trim() : '',
+    tls: protocol === 'vmess' || protocol === 'trojan' ? item.tls === true : false,
+    transport: protocol === 'vmess' || protocol === 'trojan' ? item.transport.trim().toLowerCase() : '',
+    path: protocol === 'vmess' || protocol === 'trojan' ? item.path.trim() : '',
+    host: protocol === 'vmess' || protocol === 'trojan' ? item.host.trim() : '',
     method: protocol === 'ss' ? item.method.trim() : '',
     plugin: protocol === 'ss' ? item.plugin.trim() : '',
     plugin_opts: protocol === 'ss' ? item.plugin_opts.trim() : '',
@@ -1660,6 +1673,9 @@ function protocolColor(node: BackendNode) {
   }
   if (node.protocol === 'hy2') {
     return 'geekblue'
+  }
+  if (node.protocol === 'trojan') {
+    return 'gold'
   }
   if (node.protocol === 'ss') {
     return 'green'
@@ -2539,10 +2555,11 @@ onUnmounted(() => {
             <div class="form-grid">
               <label class="field-row">
                 <span>类型</span>
-                <a-select v-model:value="staticForm.protocol">
+                <a-select v-model:value="staticForm.protocol" @change="(value: string | number) => updateStaticProtocol(String(value))">
                   <a-select-option value="hy2">HY2</a-select-option>
                   <a-select-option value="vmess">VMess</a-select-option>
                   <a-select-option value="ss">SS</a-select-option>
+                  <a-select-option value="trojan">Trojan</a-select-option>
                 </a-select>
               </label>
               <label class="field-row">
@@ -2561,7 +2578,7 @@ onUnmounted(() => {
                 <span>port</span>
                 <a-input v-model:value="staticForm.port" type="number" />
               </label>
-              <label v-if="staticForm.protocol === 'hy2'" class="field-row">
+              <label v-if="staticForm.protocol === 'hy2' || staticForm.protocol === 'trojan'" class="field-row">
                 <span>password</span>
                 <a-input v-model:value="staticForm.password" />
               </label>
@@ -2586,6 +2603,8 @@ onUnmounted(() => {
                   <span>alter id</span>
                   <a-input v-model:value="staticForm.alter_id" type="number" />
                 </label>
+              </template>
+              <template v-if="staticForm.protocol === 'vmess' || staticForm.protocol === 'trojan'">
                 <label class="field-row">
                   <span>transport</span>
                   <a-select v-model:value="staticForm.transport">

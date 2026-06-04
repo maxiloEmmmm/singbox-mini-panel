@@ -27,7 +27,6 @@ sboxctl daemon/start/restart
   -> 补齐缺失 geofiles 和订阅缓存
   -> 生成 /etc/sing-box/config.json
   -> 停止旧 sing-box
-  -> 清理 auto_redirect 残留路由
   -> 启动 sing-box run -c <config> -D <workdir>
 ```
 
@@ -50,6 +49,9 @@ ICMP 会直连，ping 只用于判断连通性，不代表 TCP/HTTPS 代理路�
 - Hysteria2
 - VMess
 - Shadowsocks
+- Trojan
+
+Trojan 支持静态节点和订阅 URI。静态节点可配置 TLS、SNI、跳过证书校验，以及 WebSocket transport 的 path 和 Host。
 
 订阅默认 UA 是 `sing-box/1.13.12`。订阅更新失败不会覆盖旧缓存；启动时没有新缓存会尝试补齐，普通更新失败会保留已有可用状态。
 
@@ -149,6 +151,7 @@ sboxctl stop
 sboxctl status
 sboxctl web
 sboxctl log
+sboxctl doctor cleanup-tun
 ```
 
 OpenWrt 服务安装：
@@ -221,7 +224,10 @@ sboxctl status
 sboxctl log
 sboxctl log sing-box
 sboxctl restart
+sboxctl doctor cleanup-tun
 ```
+
+`doctor cleanup-tun` 用于 sing-box TUN 被 `kill -9` 或断电打断后的网络恢复，会强制清理 TUN、nftables、iptables、ip rule、route table、resolved 和常见网络服务状态。
 
 ## 运维注意
 

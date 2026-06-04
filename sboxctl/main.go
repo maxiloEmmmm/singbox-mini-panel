@@ -354,6 +354,8 @@ const (
 	staticProtocolVMess = "vmess"
 	// staticProtocolSS 表示静态节点使用 Shadowsocks 协议。
 	staticProtocolSS = "ss"
+	// staticProtocolTrojan 表示静态节点使用 Trojan 协议。
+	staticProtocolTrojan = "trojan"
 )
 
 // PolicyConfig 表示路由最终策略，适用于多个代理后端场景。
@@ -520,9 +522,39 @@ type SSBackend struct {
 	Source string `yaml:"-" json:"-"`
 }
 
+// TrojanBackend 表示一个 Trojan 出站节点。
+type TrojanBackend struct {
+	// Key 是静态列表或订阅内唯一机器标识。
+	Key string `yaml:"key" json:"key"`
+	// Tag 是 sing-box outbound 的唯一标识。
+	Tag string `yaml:"tag" json:"tag"`
+	// Name 是人类可读节点名称。
+	Name string `yaml:"name" json:"name"`
+	// Server 是 Trojan 服务端域名或 IP。
+	Server string `yaml:"server" json:"server"`
+	// Port 是 Trojan 服务端端口。
+	Port int `yaml:"port" json:"port"`
+	// Password 是 Trojan 认证密码。
+	Password string `yaml:"password" json:"password"`
+	// SNI 是 TLS SNI。
+	SNI string `yaml:"sni" json:"sni"`
+	// TLS 控制是否启用 TLS。
+	TLS bool `yaml:"tls" json:"tls"`
+	// Insecure 控制是否跳过 TLS 证书校验。
+	Insecure bool `yaml:"insecure" json:"insecure"`
+	// Transport 是 V2Ray 传输层类型。
+	Transport string `yaml:"transport" json:"transport"`
+	// Path 是 WebSocket/HTTP 路径。
+	Path string `yaml:"path" json:"path"`
+	// Host 是 WebSocket/HTTP Host 头。
+	Host string `yaml:"host" json:"host"`
+	// Source 记录节点来自 static 还是 subscription，便于日志定位。
+	Source string `yaml:"-" json:"-"`
+}
+
 // StaticBackend 表示 Web 可编辑的扁平静态节点。
 type StaticBackend struct {
-	// Protocol 是节点协议，支持 hy2、vmess 和 ss。
+	// Protocol 是节点协议，支持 hy2、vmess、ss 和 trojan。
 	Protocol string `yaml:"protocol,omitempty" json:"protocol"`
 	// Key 是静态列表内唯一机器标识。
 	Key string `yaml:"key,omitempty" json:"key"`
@@ -592,6 +624,8 @@ type SubscriptionCacheNode struct {
 	VMess *VMessBackend `json:"vmess,omitempty"`
 	// SS 保存 Shadowsocks 节点。
 	SS *SSBackend `json:"ss,omitempty"`
+	// Trojan 保存 Trojan 节点。
+	Trojan *TrojanBackend `json:"trojan,omitempty"`
 }
 
 // BackendTag 返回 HY2 节点 tag。
@@ -744,6 +778,56 @@ func (b *SSBackend) BuildOutbound() map[string]any {
 	return BuildSSOutbound(*b)
 }
 
+// BackendTag 返回 Trojan 节点 tag。
+func (b *TrojanBackend) BackendTag() string {
+	return b.Tag
+}
+
+// BackendKey 返回 Trojan 节点范围内 key。
+func (b *TrojanBackend) BackendKey() string {
+	return firstNonEmpty(b.Key, b.Tag)
+}
+
+// BackendName 返回 Trojan 展示名称。
+func (b *TrojanBackend) BackendName() string {
+	return firstNonEmpty(b.Name, b.Key, b.Tag)
+}
+
+// BackendProtocol 返回 Trojan 协议名。
+func (b *TrojanBackend) BackendProtocol() string {
+	return "trojan"
+}
+
+// BackendServer 返回 Trojan 服务端。
+func (b *TrojanBackend) BackendServer() string {
+	return b.Server
+}
+
+// BackendPort 返回 Trojan 服务端端口。
+func (b *TrojanBackend) BackendPort() int {
+	return b.Port
+}
+
+// SetBackendTag 写入 Trojan 节点 tag。
+func (b *TrojanBackend) SetBackendTag(tag string) {
+	b.Tag = tag
+}
+
+// SetBackendKey 写入 Trojan 节点 key。
+func (b *TrojanBackend) SetBackendKey(key string) {
+	b.Key = key
+}
+
+// SetBackendSource 写入 Trojan 节点来源。
+func (b *TrojanBackend) SetBackendSource(source string) {
+	b.Source = source
+}
+
+// BuildOutbound 构造 Trojan sing-box outbound。
+func (b *TrojanBackend) BuildOutbound() map[string]any {
+	return BuildTrojanOutbound(*b)
+}
+
 // BackendTag 返回静态节点运行时 tag。
 func (b *StaticBackend) BackendTag() string {
 	return b.Tag
@@ -797,6 +881,9 @@ func (b *StaticBackend) BuildOutbound() map[string]any {
 		return node.BuildOutbound()
 	case staticProtocolSS:
 		node := b.toSSBackend()
+		return node.BuildOutbound()
+	case staticProtocolTrojan:
+		node := b.toTrojanBackend()
 		return node.BuildOutbound()
 	default:
 		node := b.toHY2Backend()
@@ -854,6 +941,25 @@ func (b *StaticBackend) toSSBackend() SSBackend {
 		Plugin:     b.Plugin,
 		PluginOpts: b.PluginOpts,
 		Source:     b.Source,
+	}
+}
+
+// toTrojanBackend 将扁平静态配置投影为 Trojan 运行节点。
+func (b *StaticBackend) toTrojanBackend() TrojanBackend {
+	return TrojanBackend{
+		Key:       b.Key,
+		Tag:       b.Tag,
+		Name:      b.Name,
+		Server:    b.Server,
+		Port:      b.Port,
+		Password:  b.Password,
+		SNI:       b.SNI,
+		TLS:       b.TLS,
+		Insecure:  b.Insecure,
+		Transport: b.Transport,
+		Path:      b.Path,
+		Host:      b.Host,
+		Source:    b.Source,
 	}
 }
 
@@ -1527,6 +1633,8 @@ func (a *App) Run(args []string) error {
 		return a.InstallOpenWrt()
 	case "log":
 		return a.PrintLog(args[1:])
+	case "doctor":
+		return a.Doctor(args[1:])
 	case "help", "-h", "--help":
 		PrintHelp(os.Stdout)
 		return nil
@@ -1547,7 +1655,20 @@ func DefaultLogConfig() LogConfig {
 
 // PrintHelp 输出命令帮助。
 func PrintHelp(w io.Writer) {
-	fmt.Fprintln(w, "sboxctl init|update|render|start|daemon|stop|restart|status|web|install-openwrt|log")
+	fmt.Fprintln(w, "sboxctl init|update|render|start|daemon|stop|restart|status|web|install-openwrt|log|doctor cleanup-tun")
+}
+
+// Doctor 执行显式诊断和修复命令，适用于人工介入的故障现场。
+func (a *App) Doctor(args []string) error {
+	if len(args) == 0 {
+		return errors.New("doctor 需要子命令: cleanup-tun")
+	}
+	switch args[0] {
+	case "cleanup-tun":
+		return a.CleanupTunNetwork()
+	default:
+		return fmt.Errorf("未知 doctor 子命令: %s", args[0])
+	}
 }
 
 // Init 创建默认目录、配置文件和规则文件。
@@ -1656,6 +1777,17 @@ backend:
     #   password: change-me
     #   plugin: obfs-local
     #   plugin_opts: obfs=http;obfs-host=example.com
+    # - protocol: trojan
+    #   key: trojan-a
+    #   server: example.com
+    #   port: 443
+    #   password: change-me
+    #   sni: example.com
+    #   tls: true
+    #   insecure: false
+    #   transport: ws
+    #   path: /
+    #   host: example.com
   subscription:
     # - name: main
     #   url: https://example.com/sub
@@ -1865,9 +1997,9 @@ func (a *App) Start() error {
 		return err
 	}
 	a.Logger.RotateFile(filepath.Join(a.Logger.Dir, "sing-box.log"))
-	// 触发条件：TUN auto_redirect 的路由还残留时直接 start。
-	// 不能直接 start，否则 sing-box 会因为 loopback route exists 崩掉。
-	// 防止 daemon 重启后数据面进入 crash loop 但控制面误判成功。
+	// 触发条件：启动入口需要确保旧数据面已退出。
+	// 不能直接叠加启动，避免新旧 sing-box 同时占用 TUN。
+	// 防止控制面误判数据面已经替换成功。
 	if err := a.restartSingBoxService(); err != nil {
 		return err
 	}
@@ -1883,8 +2015,180 @@ func (a *App) Stop() error {
 	if err := a.stopSingBoxProcess(); err != nil {
 		return err
 	}
-	a.cleanupAutoRedirectRoutes()
 	return nil
+}
+
+// CleanupTunNetwork 强制清理 sing-box TUN 残留网络状态。
+func (a *App) CleanupTunNetwork() error {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		cfg = DefaultConfig()
+	}
+	a.ensureLogger(cfg.Log)
+	a.Logger.Warn("开始强制清理 TUN 网络残留")
+	// 触发条件：sing-box TUN 被 SIGKILL、断电或内核异常打断。
+	// 不能调用 sing-box/sing-tun 的 Close，因为旧进程的随机表状态已丢失。
+	// 防止把恢复命令挂到启动流程，导致平时偷偷改系统网络。
+	cmd := exec.Command("sh", "-c", CleanupTunNetworkScript())
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		a.Logger.Error("强制清理 TUN 网络残留失败 err=%v", err)
+		return err
+	}
+	a.Logger.Warn("强制清理 TUN 网络残留完成")
+	return nil
+}
+
+// CleanupTunNetworkScript 返回强制清理 TUN 残留的 shell 脚本。
+func CleanupTunNetworkScript() string {
+	return `set +e
+
+log() {
+  printf '%s\n' "$*"
+}
+
+try() {
+  log "+ $*"
+  "$@" 2>/dev/null || true
+}
+
+if [ "$(id -u)" != "0" ]; then
+  printf 'cleanup-tun 需要 root 权限\n' >&2
+  exit 1
+fi
+
+log "停止 sing-box 进程"
+try pkill -TERM -x sing-box
+try pkill -TERM -x singbox
+try pkill -TERM -f '[s]ing-box.*run'
+sleep 2
+try pkill -KILL -x sing-box
+try pkill -KILL -x singbox
+try pkill -KILL -f '[s]ing-box.*run'
+
+log "清理 systemd-resolved 的 TUN DNS 状态"
+for dev in sbox0 singbox_tun tun tun0 tun1 tun2 tun3 tun4 tun5; do
+  try resolvectl revert "$dev"
+done
+try resolvectl flush-caches
+
+log "清理 nftables 和 OpenWrt fw4 残留"
+if command -v nft >/dev/null 2>&1; then
+  for family in inet ip ip6 bridge netdev arp; do
+    try nft delete table "$family" sing-box
+    try nft delete table "$family" sboxctl
+  done
+  nft -a list ruleset 2>/dev/null | awk '
+    /^table / { family=$2; table=$3 }
+    /^[ \t]*chain / { chain=$2 }
+    /!sing-box:/ || /!sboxctl:/ {
+      for (i = 1; i <= NF; i++) {
+        if ($i == "handle") print family, table, chain, $(i + 1)
+      }
+    }
+  ' | while read family table chain handle; do
+    [ -n "$family" ] && try nft delete rule "$family" "$table" "$chain" handle "$handle"
+  done
+fi
+try rm -f /etc/nftables.d/0-sing-box-auto-redirect.nft
+try rm -f /etc/nftables.d/0-sboxctl-auto-redirect.nft
+
+log "清理 iptables fallback 链"
+for bin in iptables ip6tables iptables-nft ip6tables-nft iptables-legacy ip6tables-legacy; do
+  if command -v "$bin" >/dev/null 2>&1; then
+    for chain in sing-box-output sing-box-prerouting sboxctl-output sboxctl-prerouting; do
+      try "$bin" -t nat -D OUTPUT -j "$chain"
+      try "$bin" -t nat -D PREROUTING -j "$chain"
+      try "$bin" -t nat -F "$chain"
+      try "$bin" -t nat -X "$chain"
+    done
+  fi
+done
+
+cleanup_tables=$({
+  printf '%s\n' 2022
+  ip -4 rule show 2>/dev/null
+  ip -6 rule show 2>/dev/null
+  ip -4 route show table all 2>/dev/null
+  ip -6 route show table all 2>/dev/null
+} | awk '
+  /^local 127\.0\.0\.1/ || /^local ::1/ || / dev (sbox0|singbox_tun|tun[0-9]*)/ {
+    for (i = 1; i < NF; i++) if ($i == "table") print $(i + 1)
+  }
+  {
+    p=$1
+    sub(":", "", p)
+    pn=p+0
+    suspicious=(pn == 1 || (pn >= 9000 && pn <= 9010) || pn == 32768 || index($0, "0x2023") || index($0, "0x2024") || index($0, "0x2025") || index($0, "lookup 2022"))
+    if (suspicious) {
+      for (i = 1; i < NF; i++) if ($i == "lookup") print $(i + 1)
+    }
+  }
+' | sort -u)
+
+log "清理可疑 route table"
+for table in $cleanup_tables; do
+  case "$table" in
+    ""|local|main|default|unspec)
+      continue
+      ;;
+  esac
+  try ip -4 route flush table "$table"
+  try ip -6 route flush table "$table"
+done
+
+delete_rules_for_family() {
+  fam="$1"
+  while :; do
+    pref=$(ip "$fam" rule show 2>/dev/null | awk '
+      {
+        p=$1
+        sub(":", "", p)
+        pn=p+0
+        if (pn == 1 || (pn >= 9000 && pn <= 9010) || pn == 32768 || index($0, "0x2023") || index($0, "0x2024") || index($0, "0x2025") || index($0, "lookup 2022")) {
+          print pn
+          exit
+        }
+      }
+    ')
+    [ -n "$pref" ] || break
+    try ip "$fam" rule del pref "$pref"
+  done
+}
+
+log "清理可疑 ip rule"
+delete_rules_for_family -4
+delete_rules_for_family -6
+
+log "删除 TUN 设备"
+for dev in $(ip -o link show 2>/dev/null | awk -F': ' '{ dev=$2; sub("@.*", "", dev); if (dev ~ /^(sbox0|singbox_tun|tun[0-9]*)$/) print dev }' | sort -u); do
+  try resolvectl revert "$dev"
+  try ip link set "$dev" down
+  try ip link del "$dev"
+done
+
+try ip route flush cache
+try ip -6 route flush cache
+try conntrack -F
+
+log "重载网络服务"
+try fw4 reload
+if [ -x /etc/init.d/firewall ]; then
+  try /etc/init.d/firewall restart
+fi
+if [ -x /etc/init.d/dnsmasq ]; then
+  try /etc/init.d/dnsmasq restart
+fi
+if [ -x /etc/init.d/network ]; then
+  try /etc/init.d/network reload
+fi
+try systemctl restart systemd-resolved
+try systemctl restart NetworkManager
+try systemctl restart firewalld
+
+log "cleanup-tun 完成"
+`
 }
 
 // Restart 渲染配置后重启 sing-box。
@@ -4038,6 +4342,8 @@ func normalizeStaticProtocol(protocol string) string {
 		return staticProtocolVMess
 	case staticProtocolSS:
 		return staticProtocolSS
+	case staticProtocolTrojan:
+		return staticProtocolTrojan
 	default:
 		return staticProtocolHY2
 	}
@@ -4095,6 +4401,17 @@ func NormalizeStaticBackendsForSave(nodes []StaticBackend) ([]StaticBackend, err
 			clean.Password = strings.TrimSpace(node.Password)
 			clean.Plugin = normalizeSSPlugin(strings.TrimSpace(node.Plugin))
 			clean.PluginOpts = normalizeSSPluginOpts(strings.TrimSpace(node.PluginOpts))
+		case staticProtocolTrojan:
+			if strings.TrimSpace(node.Password) == "" {
+				return nil, fmt.Errorf("静态节点 %s password 为空", node.Key)
+			}
+			clean.Password = strings.TrimSpace(node.Password)
+			clean.SNI = strings.TrimSpace(node.SNI)
+			clean.TLS = node.TLS
+			clean.Insecure = node.Insecure
+			clean.Transport = strings.ToLower(strings.TrimSpace(node.Transport))
+			clean.Path = strings.TrimSpace(node.Path)
+			clean.Host = strings.TrimSpace(node.Host)
 		default:
 			if strings.TrimSpace(node.Password) == "" {
 				return nil, fmt.Errorf("静态节点 %s password 为空", node.Key)
@@ -4193,8 +4510,10 @@ func webProtocolRank(protocol string) int {
 		return 0
 	case "vmess":
 		return 1
-	case "ss":
+	case "trojan":
 		return 2
+	case "ss":
+		return 3
 	default:
 		return 9
 	}
@@ -4387,7 +4706,6 @@ func (a *App) restartSingBoxService() error {
 	if err := a.stopSingBoxProcess(); err != nil {
 		return err
 	}
-	a.cleanupAutoRedirectRoutes()
 	return a.startSingBoxProcess()
 }
 
@@ -4485,7 +4803,6 @@ func (a *App) handleSingBoxExit(cmd *exec.Cmd, err error) {
 		a.SingBoxMutex.Unlock()
 		return
 	}
-	a.cleanupAutoRedirectRoutes()
 	a.SingBoxMutex.Lock()
 	a.SingBoxRestarting = false
 	a.SingBoxMutex.Unlock()
@@ -4516,7 +4833,7 @@ func (a *App) stopSingBoxProcess() error {
 	if cmd != nil && cmd.Process != nil && cmd.ProcessState == nil {
 		// 触发条件：Web 保存或服务停止要求释放 sing-box 数据面。
 		// 不能直接 SIGKILL，否则 sing-box 无法执行 Close 清理 TUN。
-		// 防止 auto_route/auto_redirect 路由或 nft 规则残留。
+		// 防止 TUN 状态残留导致下一次启动失败。
 		if err := cmd.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
 			return err
 		}
@@ -4588,17 +4905,6 @@ func (a *App) waitSingBoxStopped() error {
 			}
 		}
 		time.Sleep(50 * time.Millisecond)
-	}
-}
-
-// cleanupAutoRedirectRoutes 清理 sing-box auto_redirect 残留路由。
-func (a *App) cleanupAutoRedirectRoutes() {
-	// 触发条件：上一次 sing-box 非正常退出后，loopback redirect 路由残留。
-	// 不能只依赖进程退出，因为内核路由可能晚于用户态进程释放。
-	// 防止下一次 start 因 file exists 进入 crash loop。
-	cmd := `ip -4 route show table all | awk '/^local 127\.0\.0\.1 dev (wan|br-lan)/ {dev=$4; table="main"; for (i=1; i<=NF; i++) if ($i=="table") table=$(i+1); print "ip route del local 127.0.0.1 dev " dev " table " table;}' | while read line; do $line 2>/dev/null || true; done`
-	if err := exec.Command("sh", "-c", cmd).Run(); err != nil {
-		a.Logger.Warn("清理 auto_redirect 残留失败 err=%v", err)
 	}
 }
 
@@ -5130,6 +5436,35 @@ func BuildSSOutbound(b SSBackend) map[string]any {
 	return out
 }
 
+// BuildTrojanOutbound 构造 sing-box trojan outbound。
+func BuildTrojanOutbound(b TrojanBackend) map[string]any {
+	out := map[string]any{
+		"type":        "trojan",
+		"tag":         b.Tag,
+		"server":      b.Server,
+		"server_port": b.Port,
+		"password":    b.Password,
+	}
+	if b.TLS {
+		tls := map[string]any{"enabled": true, "insecure": b.Insecure}
+		if b.SNI != "" {
+			tls["server_name"] = b.SNI
+		}
+		out["tls"] = tls
+	}
+	if b.Transport == "ws" {
+		transport := map[string]any{"type": "ws"}
+		if b.Path != "" {
+			transport["path"] = b.Path
+		}
+		if b.Host != "" {
+			transport["headers"] = map[string]any{"Host": b.Host}
+		}
+		out["transport"] = transport
+	}
+	return out
+}
+
 // BuildDynamicGroupOutbound 构造动态组 selector outbound。
 func BuildDynamicGroupOutbound(b DynamicGroupBackend) map[string]any {
 	out := map[string]any{
@@ -5404,7 +5739,7 @@ func ParseLocalRules(r io.Reader) ([]LocalRule, error) {
 	return rules, scanner.Err()
 }
 
-// FetchSubscription 下载并解析订阅，只保留 HY2、VMess 和 SS。
+// FetchSubscription 下载并解析订阅，只保留 HY2、VMess、SS 和 Trojan。
 func FetchSubscription(client *http.Client, sub Subscription) ([]ProxyBackend, int, int, error) {
 	req, err := http.NewRequest(http.MethodGet, sub.URL, nil)
 	if err != nil {
@@ -5453,6 +5788,15 @@ func FetchSubscription(client *http.Client, sub Subscription) ([]ProxyBackend, i
 		}
 		if strings.HasPrefix(line, "ss://") {
 			node, err := ParseSSURI(line)
+			if err != nil {
+				failed++
+				continue
+			}
+			nodes = append(nodes, node)
+			continue
+		}
+		if strings.HasPrefix(line, "trojan://") {
+			node, err := ParseTrojanURI(line)
 			if err != nil {
 				failed++
 				continue
@@ -5676,6 +6020,50 @@ func parseLegacySSURI(raw string) (*SSBackend, error) {
 	}, nil
 }
 
+// ParseTrojanURI 解析 Trojan 分享链接。
+func ParseTrojanURI(raw string) (*TrojanBackend, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return nil, err
+	}
+	if u.Scheme != "trojan" {
+		return nil, fmt.Errorf("不是 trojan 协议")
+	}
+	if u.User == nil || u.Hostname() == "" {
+		return nil, fmt.Errorf("trojan 链接缺少认证或服务端")
+	}
+	password := u.User.Username()
+	if pass, ok := u.User.Password(); ok && pass != "" {
+		password = pass
+	}
+	if password == "" {
+		return nil, fmt.Errorf("trojan 密码为空")
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		return nil, fmt.Errorf("端口无效")
+	}
+	q := u.Query()
+	name, _ := url.QueryUnescape(u.Fragment)
+	tag := SanitizeTag(firstNonEmpty(strings.TrimSpace(name), u.Hostname()))
+	security := strings.ToLower(strings.TrimSpace(q.Get("security")))
+	tlsEnabled := security != "none"
+	transport := strings.ToLower(strings.TrimSpace(firstNonEmpty(q.Get("type"), q.Get("transport"))))
+	return &TrojanBackend{
+		Key:       tag,
+		Name:      firstNonEmpty(strings.TrimSpace(name), tag),
+		Server:    u.Hostname(),
+		Port:      port,
+		Password:  password,
+		SNI:       firstNonEmpty(q.Get("sni"), q.Get("peer")),
+		TLS:       tlsEnabled,
+		Insecure:  parseBool(firstNonEmpty(q.Get("allowInsecure"), q.Get("insecure"), q.Get("skip-cert-verify"))),
+		Transport: transport,
+		Path:      strings.TrimSpace(q.Get("path")),
+		Host:      strings.TrimSpace(q.Get("host")),
+	}, nil
+}
+
 // decodeSSUserInfo 解码 SIP002 userinfo 中的 method:password。
 func decodeSSUserInfo(value string) (string, string, error) {
 	decoded, err := decodeBase64String(value)
@@ -5745,8 +6133,10 @@ func backendProtocolRank(node ProxyBackend) int {
 		return 0
 	case "vmess":
 		return 1
-	case "ss":
+	case "trojan":
 		return 2
+	case "ss":
+		return 3
 	default:
 		return 9
 	}
@@ -5822,6 +6212,9 @@ func SubscriptionCacheFromBackends(backends []ProxyBackend) []SubscriptionCacheN
 		case *SSBackend:
 			copyNode := *node
 			nodes = append(nodes, SubscriptionCacheNode{Protocol: "ss", SS: &copyNode})
+		case *TrojanBackend:
+			copyNode := *node
+			nodes = append(nodes, SubscriptionCacheNode{Protocol: "trojan", Trojan: &copyNode})
 		}
 	}
 	return nodes
@@ -5845,6 +6238,10 @@ func BackendsFromSubscriptionCache(data []byte) ([]ProxyBackend, error) {
 			case "ss":
 				if envelope.SS != nil {
 					nodes = append(nodes, envelope.SS)
+				}
+			case "trojan":
+				if envelope.Trojan != nil {
+					nodes = append(nodes, envelope.Trojan)
 				}
 			}
 		}
