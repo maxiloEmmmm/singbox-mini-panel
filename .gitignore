@@ -1,0 +1,42 @@
+# 依赖目录
+node_modules/
+
+# 前端构建与缓存
+dist/
+sboxctl/web/dist/
+.vite/
+*.tsbuildinfo
+
+# Go 构建产物
+sboxctl/sboxctl
+sboxctl/*.test
+*.test
+*.out
+coverage/
+*.cover
+*.prof
+
+# 本地对照拷贝
+vendor/
+
+# 环境与本地配置
+.env
+.env.*
+!.env.example
+*.local
+
+# 日志与临时文件
+*.log
+*.tmp
+*.temp
+*.pid
+*.bak
+*.backup
+*.swp
+*.swo
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

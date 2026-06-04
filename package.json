@@ -1,0 +1,28 @@
+{
+  "scripts": {
+    "dev": "vite",
+    "check": "vue-tsc --noEmit",
+    "check:web": "node tests/e2e/check-web-ready.mjs",
+    "build": "vue-tsc -b && vite build",
+    "preview": "vite preview",
+    "verify": "npm run check",
+    "verify:web": "npm run check && npm run check:web",
+    "verify:full": "npm run build && npm run e2e:web",
+    "e2e:obscura:capability": "node tests/e2e/obscura-vite-capability.mjs",
+    "e2e:obscura:score": "node tests/e2e/obscura-score-display.mjs",
+    "e2e:chrome:score": "node tests/e2e/chrome-score-display.mjs",
+    "e2e:web": "node tests/e2e/run-web-verify.mjs",
+    "e2e:web:ready": "node tests/e2e/check-web-ready.mjs"
+  },
+  "dependencies": {
+    "@vitejs/plugin-vue": "^6.0.1",
+    "ant-design-vue": "^4.2.6",
+    "vite": "^7.1.7",
+    "vue": "^3.5.22"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.59.1",
+    "typescript": "~5.9.3",
+    "vue-tsc": "^3.1.0"
+  }
+}
