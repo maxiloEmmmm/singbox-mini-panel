@@ -479,6 +479,76 @@ func TestBuildInboundsMixed(t *testing.T) {
 	}
 }
 
+// TestApplyWebInboundConfig 验证 Web 保存 mixed 监听配置。
+func TestApplyWebInboundConfig(t *testing.T) {
+	cfg := DefaultConfig()
+	err := ApplyWebInboundConfig(&cfg, WebInboundConfig{
+		InboundMode: "mixed",
+		MixedListen: "127.0.0.1",
+		MixedPort:   2080,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Inbound.Mode != "mixed" || cfg.Inbound.Mixed.Listen != "127.0.0.1" || cfg.Inbound.Mixed.Port != 2080 {
+		t.Fatalf("mixed 监听保存错误: %+v", cfg.Inbound)
+	}
+}
+
+// TestApplyWebInboundConfigRejectsHostPort 验证 mixed listen 不接受端口混写。
+func TestApplyWebInboundConfigRejectsHostPort(t *testing.T) {
+	cfg := DefaultConfig()
+	err := ApplyWebInboundConfig(&cfg, WebInboundConfig{
+		InboundMode: "mixed",
+		MixedListen: "127.0.0.1:1080",
+		MixedPort:   1080,
+	})
+	if err == nil {
+		t.Fatal("mixed listen 混写端口应该报错")
+	}
+}
+
+// TestWebConnectionFromClashDirect 验证连接流水能识别 direct。
+func TestWebConnectionFromClashDirect(t *testing.T) {
+	row := WebConnectionFromClash(clashConnection{
+		ID:       "1",
+		Upload:   10,
+		Download: 20,
+		Chains:   []string{"direct"},
+		Rule:     "rule_set=geoip-cn => route(direct)",
+		Metadata: clashConnectionMetadata{
+			Network:         "tcp",
+			SourceIP:        "192.168.88.130",
+			SourcePort:      50000,
+			DestinationIP:   "1.2.3.4",
+			DestinationPort: 443,
+		},
+	})
+	if row.Decision != "direct" || row.Total != 30 {
+		t.Fatalf("连接 direct 识别错误: %+v", row)
+	}
+}
+
+// TestWebConnectionFromClashProxy 验证连接流水能识别代理链路。
+func TestWebConnectionFromClashProxy(t *testing.T) {
+	row := WebConnectionFromClash(clashConnection{
+		ID:       "2",
+		Upload:   7,
+		Download: 11,
+		Chains:   []string{"sub-main-jp-hy2", "group-main", "current"},
+		Metadata: clashConnectionMetadata{
+			Network:         "tcp",
+			SourceIP:        "192.168.88.164",
+			SourcePort:      50001,
+			Host:            "chatgpt.com",
+			DestinationPort: 443,
+		},
+	})
+	if row.Decision != "proxy" || row.Destination != "chatgpt.com:443" {
+		t.Fatalf("连接 proxy 识别错误: %+v", row)
+	}
+}
+
 // TestNextDailyTime 验证 daemon 会计算下一次固定更新时间。
 func TestNextDailyTime(t *testing.T) {
 	loc := time.FixedZone("test", 8*60*60)

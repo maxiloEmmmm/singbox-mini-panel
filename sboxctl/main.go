@@ -45,6 +45,8 @@ const (
 	defaultSingBoxConfig       = "/etc/sing-box/config.json"
 	defaultSingBoxBinary       = "/usr/bin/sing-box"
 	defaultSingBoxWorkDir      = "/usr/share/sing-box"
+	defaultMixedListen         = "0.0.0.0"
+	defaultMixedPort           = 1080
 	defaultBootstrapDNS        = "119.29.29.29"
 	defaultDirectDNS           = "119.29.29.29"
 	defaultRemoteDNSServer     = "cloudflare-dns.com"
@@ -1286,6 +1288,8 @@ type WebStateResponse struct {
 	GeoFiles []WebGeoFile `json:"geofiles"`
 	// HostsOverride 控制是否启用 /etc/hosts DNS。
 	HostsOverride bool `json:"hosts_override"`
+	// Inbound 保存入口模式和 mixed 监听配置。
+	Inbound WebInboundConfig `json:"inbound"`
 	// ForceProxy 是强制代理规则文件内容。
 	ForceProxy string `json:"force_proxy"`
 	// ForceDirect 是强制直连规则文件内容。
@@ -1414,6 +1418,16 @@ type WebGeoFile struct {
 	Role string `json:"role"`
 }
 
+// WebInboundConfig 表示 Web 可编辑的入口配置。
+type WebInboundConfig struct {
+	// InboundMode 是入口模式，支持 tun 和 mixed。
+	InboundMode string `json:"inbound_mode"`
+	// MixedListen 是 mixed 入站监听地址。
+	MixedListen string `json:"mixed_listen"`
+	// MixedPort 是 mixed 入站监听端口。
+	MixedPort int `json:"mixed_port"`
+}
+
 // WebSaveRequest 表示保存策略和规则的请求。
 type WebSaveRequest struct {
 	// ServiceEnabled 表示保存后是否启用 sing-box 数据面。
@@ -1430,6 +1444,8 @@ type WebSaveRequest struct {
 	Subscriptions []Subscription `json:"subscriptions"`
 	// DynamicGroups 是 Web 提交的动态节点组配置。
 	DynamicGroups []DynamicGroupConfig `json:"dynamic_groups"`
+	// Inbound 保存入口模式和 mixed 监听配置。
+	Inbound WebInboundConfig `json:"inbound"`
 	// ForceProxy 是强制代理规则文件内容。
 	ForceProxy string `json:"force_proxy"`
 	// ForceDirect 是强制直连规则文件内容。
@@ -1502,6 +1518,128 @@ type WebProbeResponse struct {
 	Tag string `json:"tag"`
 	// DelayMS 是 HTTP 探测时延，单位毫秒。
 	DelayMS int `json:"delay_ms"`
+}
+
+// WebConnectionsResponse 表示 Web 连接流水响应。
+type WebConnectionsResponse struct {
+	// UpdatedAt 是本次读取连接的时间。
+	UpdatedAt string `json:"updated_at"`
+	// Total 是当前连接数量。
+	Total int `json:"total"`
+	// UploadTotal 是 sing-box 累计上传字节数。
+	UploadTotal int64 `json:"upload_total"`
+	// DownloadTotal 是 sing-box 累计下载字节数。
+	DownloadTotal int64 `json:"download_total"`
+	// Connections 是按当前连接流量倒序排列的连接列表。
+	Connections []WebConnection `json:"connections"`
+}
+
+// WebConnection 表示单条 sing-box 当前连接。
+type WebConnection struct {
+	// ID 是 Clash API 返回的连接 ID。
+	ID string `json:"id"`
+	// Network 是 tcp 或 udp。
+	Network string `json:"network"`
+	// Source 是来源地址和端口。
+	Source string `json:"source"`
+	// Destination 是目标域名或 IP 和端口。
+	Destination string `json:"destination"`
+	// Host 是目标域名，可能为空。
+	Host string `json:"host"`
+	// DestinationIP 是目标 IP，可能为空。
+	DestinationIP string `json:"destination_ip"`
+	// DestinationPort 是目标端口。
+	DestinationPort int `json:"destination_port"`
+	// Upload 是当前连接上传字节数。
+	Upload int64 `json:"upload"`
+	// Download 是当前连接下载字节数。
+	Download int64 `json:"download"`
+	// Total 是当前连接上传和下载字节数之和。
+	Total int64 `json:"total"`
+	// Chains 是 sing-box 出站链路。
+	Chains []string `json:"chains"`
+	// ChainText 是出站链路展示文本。
+	ChainText string `json:"chain_text"`
+	// Decision 是 direct、proxy、reject 或 unknown。
+	Decision string `json:"decision"`
+	// Rule 是命中的规则文本。
+	Rule string `json:"rule"`
+	// RulePayload 是命中的规则 payload。
+	RulePayload string `json:"rule_payload"`
+	// StartedAt 是连接开始时间。
+	StartedAt string `json:"started_at"`
+}
+
+// clashConnectionsResponse 表示 Clash API 当前连接响应。
+type clashConnectionsResponse struct {
+	// UploadTotal 是累计上传字节数。
+	UploadTotal int64 `json:"uploadTotal"`
+	// DownloadTotal 是累计下载字节数。
+	DownloadTotal int64 `json:"downloadTotal"`
+	// Connections 是当前连接列表。
+	Connections []clashConnection `json:"connections"`
+}
+
+// clashConnection 表示 Clash API 的单条连接。
+type clashConnection struct {
+	// ID 是连接 ID。
+	ID string `json:"id"`
+	// Metadata 是连接五元组和域名信息。
+	Metadata clashConnectionMetadata `json:"metadata"`
+	// Upload 是当前连接上传字节数。
+	Upload int64 `json:"upload"`
+	// Download 是当前连接下载字节数。
+	Download int64 `json:"download"`
+	// Chains 是出站链路。
+	Chains []string `json:"chains"`
+	// Rule 是命中的规则文本。
+	Rule string `json:"rule"`
+	// RulePayload 是命中的规则 payload。
+	RulePayload string `json:"rulePayload"`
+	// Start 是连接开始时间。
+	Start string `json:"start"`
+}
+
+// clashConnectionMetadata 表示 Clash API 连接元数据。
+type clashConnectionMetadata struct {
+	// Network 是 tcp 或 udp。
+	Network string `json:"network"`
+	// SourceIP 是来源 IP。
+	SourceIP string `json:"sourceIP"`
+	// SourcePort 是来源端口。
+	SourcePort flexibleInt `json:"sourcePort"`
+	// DestinationIP 是目标 IP。
+	DestinationIP string `json:"destinationIP"`
+	// DestinationPort 是目标端口。
+	DestinationPort flexibleInt `json:"destinationPort"`
+	// Host 是目标域名。
+	Host string `json:"host"`
+}
+
+// flexibleInt 兼容 Clash API 中数字或字符串形式的端口。
+type flexibleInt int
+
+// UnmarshalJSON 解析数字或字符串端口，适用于 sing-box Clash API 差异。
+func (v *flexibleInt) UnmarshalJSON(data []byte) error {
+	var number int
+	if err := json.Unmarshal(data, &number); err == nil {
+		*v = flexibleInt(number)
+		return nil
+	}
+	var text string
+	if err := json.Unmarshal(data, &text); err != nil {
+		return err
+	}
+	if strings.TrimSpace(text) == "" {
+		*v = 0
+		return nil
+	}
+	parsed, err := strconv.Atoi(strings.TrimSpace(text))
+	if err != nil {
+		return err
+	}
+	*v = flexibleInt(parsed)
+	return nil
 }
 
 // ConfigConflictError 表示保存时配置已被其他来源修改。
@@ -2587,6 +2725,94 @@ func (a *App) CloseClashConnections() error {
 	return nil
 }
 
+// FetchWebConnections 读取 sing-box 当前连接并整理为 Web 展示结构。
+func (a *App) FetchWebConnections() (WebConnectionsResponse, error) {
+	endpoint := "http://" + defaultClashAPIListen + "/connections"
+	client := &http.Client{Timeout: 1500 * time.Millisecond}
+	resp, err := client.Get(endpoint)
+	if err != nil {
+		return WebConnectionsResponse{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return WebConnectionsResponse{}, fmt.Errorf("连接读取失败: %s %s", resp.Status, strings.TrimSpace(string(data)))
+	}
+	var raw clashConnectionsResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 8*1024*1024)).Decode(&raw); err != nil {
+		return WebConnectionsResponse{}, err
+	}
+	connections := make([]WebConnection, 0, len(raw.Connections))
+	for _, item := range raw.Connections {
+		connections = append(connections, WebConnectionFromClash(item))
+	}
+	sort.SliceStable(connections, func(i, j int) bool {
+		return connections[i].Total > connections[j].Total
+	})
+	return WebConnectionsResponse{
+		UpdatedAt:     time.Now().Format(time.RFC3339),
+		Total:         len(connections),
+		UploadTotal:   raw.UploadTotal,
+		DownloadTotal: raw.DownloadTotal,
+		Connections:   connections,
+	}, nil
+}
+
+// WebConnectionFromClash 把 Clash API 连接转换成 Web 展示行。
+func WebConnectionFromClash(item clashConnection) WebConnection {
+	total := item.Upload + item.Download
+	destinationHost := firstNonEmpty(item.Metadata.Host, item.Metadata.DestinationIP)
+	return WebConnection{
+		ID:              item.ID,
+		Network:         item.Metadata.Network,
+		Source:          formatHostPort(item.Metadata.SourceIP, int(item.Metadata.SourcePort)),
+		Destination:     formatHostPort(destinationHost, int(item.Metadata.DestinationPort)),
+		Host:            item.Metadata.Host,
+		DestinationIP:   item.Metadata.DestinationIP,
+		DestinationPort: int(item.Metadata.DestinationPort),
+		Upload:          item.Upload,
+		Download:        item.Download,
+		Total:           total,
+		Chains:          append([]string(nil), item.Chains...),
+		ChainText:       strings.Join(item.Chains, " > "),
+		Decision:        classifyConnectionDecision(item.Chains),
+		Rule:            item.Rule,
+		RulePayload:     item.RulePayload,
+		StartedAt:       item.Start,
+	}
+}
+
+// classifyConnectionDecision 根据出站链路判断连接最终方向。
+func classifyConnectionDecision(chains []string) string {
+	if len(chains) == 0 {
+		return "unknown"
+	}
+	for _, chain := range chains {
+		clean := strings.ToLower(strings.TrimSpace(chain))
+		if clean == "block" || clean == "reject" {
+			return "reject"
+		}
+	}
+	for _, chain := range chains {
+		if strings.TrimSpace(chain) == "direct" {
+			return "direct"
+		}
+	}
+	return "proxy"
+}
+
+// formatHostPort 格式化地址和端口，允许地址为空时只展示端口。
+func formatHostPort(host string, port int) string {
+	host = strings.TrimSpace(host)
+	if port <= 0 {
+		return host
+	}
+	if host == "" {
+		return ":" + strconv.Itoa(port)
+	}
+	return net.JoinHostPort(strings.Trim(host, "[]"), strconv.Itoa(port))
+}
+
 // sleepContext 等待指定时长，并在退出信号到来时中断。
 func sleepContext(ctx context.Context, delay time.Duration) bool {
 	timer := time.NewTimer(delay)
@@ -2937,6 +3163,7 @@ func (a *App) StartWebServer(cfg Config) (*WebServer, error) {
 	mux.HandleFunc("/api/subscription/update", web.withAuth(web.handleSubscriptionUpdate))
 	mux.HandleFunc("/api/node/probe", web.withAuth(web.handleNodeProbe))
 	mux.HandleFunc("/api/route/check", web.withAuth(web.handleRouteCheck))
+	mux.HandleFunc("/api/connections", web.withAuth(web.handleConnections))
 	mux.HandleFunc("/", web.handleStatic)
 	return web, nil
 }
@@ -3184,6 +3411,20 @@ func (w *WebServer) handleRouteCheck(rw http.ResponseWriter, req *http.Request) 
 	writeJSON(rw, http.StatusOK, result)
 }
 
+// handleConnections 返回当前连接流水，适用于 Web 持续刷新。
+func (w *WebServer) handleConnections(rw http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		writeJSON(rw, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	connections, err := w.App.FetchWebConnections()
+	if err != nil {
+		writeJSON(rw, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(rw, http.StatusOK, connections)
+}
+
 // handleStatic 返回内嵌前端资源，未知路径回退到 index.html。
 func (w *WebServer) handleStatic(rw http.ResponseWriter, req *http.Request) {
 	cleanPath := strings.TrimPrefix(filepath.Clean(req.URL.Path), string(filepath.Separator))
@@ -3346,6 +3587,7 @@ func (a *App) BuildWebState() (WebStateResponse, error) {
 		DynamicGroups: dynamicGroups,
 		GeoFiles:      a.BuildWebGeoFiles(),
 		HostsOverride: HostsOverrideEnabled(cfg),
+		Inbound:       WebInboundFromConfig(cfg),
 		ForceProxy:    string(forceProxy),
 		ForceDirect:   string(forceDirect),
 		DynamicOutbound: append(make([]DynamicOutboundRule, 0, len(cfg.Policy.DynamicOutbound)),
@@ -3427,6 +3669,103 @@ func (a *App) WebGeoFile(kind string, name string, cfg Config) WebGeoFile {
 	return item
 }
 
+// WebInboundFromConfig 生成 Web 可编辑的入口配置。
+func WebInboundFromConfig(cfg Config) WebInboundConfig {
+	MergeConfigDefaults(&cfg)
+	return WebInboundConfig{
+		InboundMode: cfg.Inbound.Mode,
+		MixedListen: cfg.Inbound.Mixed.Listen,
+		MixedPort:   cfg.Inbound.Mixed.Port,
+	}
+}
+
+// ApplyWebInboundConfig 把 Web 提交的入口配置写回主配置。
+func ApplyWebInboundConfig(cfg *Config, inbound WebInboundConfig) error {
+	if !WebInboundConfigProvided(inbound) {
+		return nil
+	}
+	mode, err := normalizeInboundMode(inbound.InboundMode, cfg.Inbound.Mode)
+	if err != nil {
+		return err
+	}
+	mixedListen, err := normalizeMixedListen(inbound.MixedListen, cfg.Inbound.Mixed.Listen)
+	if err != nil {
+		return err
+	}
+	mixedPort, err := normalizeConfigPort(inbound.MixedPort, cfg.Inbound.Mixed.Port, defaultMixedPort, "mixed port")
+	if err != nil {
+		return err
+	}
+	cfg.Inbound.Mode = mode
+	cfg.Inbound.Mixed.Listen = mixedListen
+	cfg.Inbound.Mixed.Port = mixedPort
+	return nil
+}
+
+// WebInboundConfigProvided 判断旧前端保存请求是否携带入口配置。
+func WebInboundConfigProvided(inbound WebInboundConfig) bool {
+	return strings.TrimSpace(inbound.InboundMode) != "" ||
+		strings.TrimSpace(inbound.MixedListen) != "" ||
+		inbound.MixedPort != 0
+}
+
+// normalizeInboundMode 校验入口模式，空值沿用当前配置。
+func normalizeInboundMode(value string, fallback string) (string, error) {
+	mode := strings.TrimSpace(value)
+	if mode == "" {
+		mode = strings.TrimSpace(fallback)
+	}
+	if mode == "" {
+		mode = "tun"
+	}
+	switch mode {
+	case "tun", "mixed":
+		return mode, nil
+	default:
+		return "", fmt.Errorf("入口模式不支持: %s", mode)
+	}
+}
+
+// normalizeMixedListen 校验 mixed 监听地址，防止把 host:port 写进 host 字段。
+func normalizeMixedListen(value string, fallback string) (string, error) {
+	listen := strings.TrimSpace(value)
+	if listen == "" {
+		listen = strings.TrimSpace(fallback)
+	}
+	if listen == "" {
+		listen = defaultMixedListen
+	}
+	if strings.Contains(listen, "://") || strings.ContainsAny(listen, "/ \t\r\n") {
+		return "", errors.New("mixed listen 只能填写监听地址，不能包含协议、端口或路径")
+	}
+	if _, _, err := net.SplitHostPort(listen); err == nil {
+		return "", errors.New("mixed listen 不要包含端口，端口请填单独字段")
+	}
+	trimmedIPv6 := strings.TrimPrefix(strings.TrimSuffix(listen, "]"), "[")
+	if strings.Contains(trimmedIPv6, ":") {
+		if _, err := netip.ParseAddr(trimmedIPv6); err != nil {
+			return "", fmt.Errorf("mixed listen IPv6 地址无效: %s", listen)
+		}
+		return trimmedIPv6, nil
+	}
+	return listen, nil
+}
+
+// normalizeConfigPort 校验监听端口，空值沿用当前配置。
+func normalizeConfigPort(value int, fallback int, defaultValue int, field string) (int, error) {
+	port := value
+	if port == 0 {
+		port = fallback
+	}
+	if port == 0 {
+		port = defaultValue
+	}
+	if port < 1 || port > 65535 {
+		return 0, fmt.Errorf("%s 端口非法: %d", field, port)
+	}
+	return port, nil
+}
+
 // ConfigHash 计算 Web 可编辑配置哈希，用于保存时冲突检测。
 func (a *App) ConfigHash() (string, error) {
 	hash := sha256.New()
@@ -3469,6 +3808,9 @@ func (a *App) SaveWebState(req WebSaveRequest) error {
 	}
 	oldCfg := cfg
 	cfg.Service.Enabled = boolPtr(req.ServiceEnabled)
+	if err := ApplyWebInboundConfig(&cfg, req.Inbound); err != nil {
+		return err
+	}
 	staticNodes, err := NormalizeStaticBackendsForSave(req.Static)
 	if err != nil {
 		return err
@@ -5663,10 +6005,10 @@ func MergeConfigDefaults(cfg *Config) {
 		cfg.Inbound.Mode = "tun"
 	}
 	if cfg.Inbound.Mixed.Listen == "" {
-		cfg.Inbound.Mixed.Listen = "0.0.0.0"
+		cfg.Inbound.Mixed.Listen = defaultMixedListen
 	}
 	if cfg.Inbound.Mixed.Port == 0 {
-		cfg.Inbound.Mixed.Port = 1080
+		cfg.Inbound.Mixed.Port = defaultMixedPort
 	}
 	if cfg.Web.Listen == "" {
 		cfg.Web.Listen = defaultWebListen
