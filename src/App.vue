@@ -135,6 +135,66 @@ interface RouteCheckResult {
   notes: string[]
 }
 
+/** 当前连接响应适用于连接流水页。 */
+interface ConnectionsResponse {
+  /** 本次刷新时间。 */
+  updated_at: string
+  /** 当前连接数量。 */
+  total: number
+  /** 累计上传字节数。 */
+  upload_total: number
+  /** 累计下载字节数。 */
+  download_total: number
+  /** 当前连接列表。 */
+  connections: ConnectionRow[]
+}
+
+/** 当前连接行适用于判断域名是否走代理。 */
+interface ConnectionRow {
+  /** 连接 ID。 */
+  id: string
+  /** 网络类型。 */
+  network: string
+  /** 来源地址。 */
+  source: string
+  /** 目标地址。 */
+  destination: string
+  /** 目标域名。 */
+  host: string
+  /** 目标 IP。 */
+  destination_ip: string
+  /** 目标端口。 */
+  destination_port: number
+  /** 上传字节数。 */
+  upload: number
+  /** 下载字节数。 */
+  download: number
+  /** 上传下载合计。 */
+  total: number
+  /** 出站链路。 */
+  chains: string[]
+  /** 出站链路展示文本。 */
+  chain_text: string
+  /** direct、proxy、reject 或 unknown。 */
+  decision: string
+  /** 命中规则。 */
+  rule: string
+  /** 命中规则 payload。 */
+  rule_payload: string
+  /** 连接开始时间。 */
+  started_at: string
+}
+
+/** 入口配置适用于 Web 修改 mixed 监听。 */
+interface InboundSettings {
+  /** 入口模式。 */
+  inbound_mode: string
+  /** mixed 监听地址。 */
+  mixed_listen: string
+  /** mixed 监听端口。 */
+  mixed_port: number
+}
+
 /** 动态组候选节点适用于成员选择列表。 */
 interface MemberOption {
   /** 成员链路 key。 */
@@ -215,6 +275,8 @@ interface PanelState {
   geofiles: GeoFileItem[]
   /** /etc/hosts DNS 开关。 */
   hosts_override: boolean
+  /** 入口配置。 */
+  inbound: InboundSettings
   /** 强制代理规则文本。 */
   force_proxy: string
   /** 强制直连规则文本。 */
@@ -305,11 +367,17 @@ const savedDynamicOutbound = ref<DynamicOutboundRule[]>([])
 const selectedDynamicOutboundIndex = ref(0)
 const forceProxy = ref('')
 const forceDirect = ref('')
+const inboundMode = ref('tun')
+const mixedListen = ref('0.0.0.0')
+const mixedPort = ref(1080)
 const serviceEnabled = ref(true)
 const configHash = ref('')
 const savedSelectedTag = ref('')
 const savedForceProxy = ref('')
 const savedForceDirect = ref('')
+const savedInboundMode = ref('tun')
+const savedMixedListen = ref('0.0.0.0')
+const savedMixedPort = ref(1080)
 const savedServiceEnabled = ref(true)
 const adsBlock = ref(true)
 const savedAdsBlock = ref(true)
@@ -350,6 +418,15 @@ const routeCheckInput = ref('')
 const routeCheckLoading = ref(false)
 const routeCheckError = ref('')
 const routeCheckResult = ref<RouteCheckResult | null>(null)
+const connections = ref<ConnectionRow[]>([])
+const connectionsUpdatedAt = ref('')
+const connectionUploadTotal = ref(0)
+const connectionDownloadTotal = ref(0)
+const connectionFilter = ref('')
+const connectionDecisionFilter = ref('all')
+const connectionSort = ref('total')
+const connectionsLoading = ref(false)
+const connectionsError = ref('')
 
 const helpSections: HelpSection[] = [
   {
@@ -468,6 +545,28 @@ const selectedDynamicOutboundRule = computed(
 )
 const activeOutboundText = computed(() => outboundDisplayLabel(selectedTag.value))
 const configWarnings = computed(() => panel.value?.warnings || [])
+const filteredConnections = computed(() => {
+  const query = connectionFilter.value.trim().toLowerCase()
+  return connections.value.filter((item) => {
+    if (connectionDecisionFilter.value !== 'all' && item.decision !== connectionDecisionFilter.value) {
+      return false
+    }
+    if (!query) {
+      return true
+    }
+    return [
+      item.source,
+      item.destination,
+      item.host,
+      item.destination_ip,
+      item.network,
+      item.decision,
+      item.chain_text,
+      item.rule,
+      item.rule_payload,
+    ].join(' ').toLowerCase().includes(query)
+  }).sort(compareConnections)
+})
 const memberSourceGroups = computed<MemberSourceGroup[]>(() => {
   const groups: MemberSourceGroup[] = [
     {
@@ -546,6 +645,9 @@ const hasChanges = computed(() => {
     serializeDynamicOutbound(dynamicOutbound.value) !== serializeDynamicOutbound(savedDynamicOutbound.value) ||
     forceProxy.value !== savedForceProxy.value ||
     forceDirect.value !== savedForceDirect.value ||
+    inboundMode.value !== savedInboundMode.value ||
+    mixedListen.value !== savedMixedListen.value ||
+    Number(mixedPort.value) !== Number(savedMixedPort.value) ||
     serviceEnabled.value !== savedServiceEnabled.value ||
     adsBlock.value !== savedAdsBlock.value ||
     hostsOverride.value !== savedHostsOverride.value ||
@@ -665,6 +767,9 @@ function applyPanelState(nextPanel: PanelState) {
   }
   forceProxy.value = nextPanel.force_proxy
   forceDirect.value = nextPanel.force_direct
+  inboundMode.value = normalizedInboundMode(nextPanel.inbound?.inbound_mode)
+  mixedListen.value = nextPanel.inbound?.mixed_listen || '0.0.0.0'
+  mixedPort.value = nextPanel.inbound?.mixed_port || 1080
   serviceEnabled.value = nextPanel.health.service_enabled !== false
   hostsOverride.value = nextPanel.hosts_override !== false
   const geofiles = arrayOrEmpty(nextPanel.geofiles)
@@ -679,6 +784,9 @@ function applyPanelState(nextPanel: PanelState) {
   savedDynamicOutbound.value = cloneDynamicOutbound(dynamicOutbound.value)
   savedForceProxy.value = forceProxy.value
   savedForceDirect.value = forceDirect.value
+  savedInboundMode.value = inboundMode.value
+  savedMixedListen.value = mixedListen.value
+  savedMixedPort.value = Number(mixedPort.value)
   savedServiceEnabled.value = serviceEnabled.value
   savedAdsBlock.value = adsBlock.value
   savedHostsOverride.value = hostsOverride.value
@@ -693,9 +801,24 @@ function normalizedPanelState(nextPanel: PanelState) {
     subscriptions: cloneSubscriptions(nextPanel.subscriptions),
     dynamic_groups: cloneDynamicGroups(nextPanel.dynamic_groups),
     geofiles: arrayOrEmpty(nextPanel.geofiles).map((file) => ({ ...file })),
+    inbound: normalizeInboundSettings(nextPanel.inbound),
     dynamic_outbound: cloneDynamicOutbound(nextPanel.dynamic_outbound),
     warnings: [...arrayOrEmpty(nextPanel.warnings)],
   }
+}
+
+// 适用场景：归一化入口配置，兼容旧后端状态。
+function normalizeInboundSettings(value: InboundSettings | null | undefined) {
+  return {
+    inbound_mode: normalizedInboundMode(value?.inbound_mode || ''),
+    mixed_listen: value?.mixed_listen || '0.0.0.0',
+    mixed_port: value?.mixed_port || 1080,
+  }
+}
+
+// 适用场景：归一化入口模式，兼容旧配置空值。
+function normalizedInboundMode(value: string) {
+  return value === 'mixed' ? 'mixed' : 'tun'
 }
 
 // 适用场景：把后端空 slice 编码出的 null 规整成前端可遍历列表。
@@ -1550,6 +1673,141 @@ async function fetchState() {
   applyPanelState(await response.json())
 }
 
+// 适用场景：刷新当前连接流水，供 Web 自动轮询。
+async function fetchConnections() {
+  if (!token.value || connectionsLoading.value) {
+    return
+  }
+  connectionsLoading.value = true
+  try {
+    const response = await fetch('/api/connections', {
+      cache: 'no-store',
+      headers: authHeaders(),
+    })
+    if (response.status === 401 || response.status === 403) {
+      logout()
+      return
+    }
+    if (!response.ok) {
+      throw new Error(await readError(response))
+    }
+    const data = (await response.json()) as ConnectionsResponse
+    connections.value = arrayOrEmpty(data.connections).map((item) => ({ ...item }))
+    connectionsUpdatedAt.value = data.updated_at
+    connectionUploadTotal.value = data.upload_total || 0
+    connectionDownloadTotal.value = data.download_total || 0
+    connectionsError.value = ''
+  } catch (error) {
+    connectionsError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    connectionsLoading.value = false
+  }
+}
+
+// 适用场景：把连接方向转成中文标签。
+function connectionDecisionText(decision: string) {
+  if (decision === 'direct') {
+    return '直连'
+  }
+  if (decision === 'proxy') {
+    return '代理'
+  }
+  if (decision === 'reject') {
+    return '拦截'
+  }
+  return '未知'
+}
+
+// 适用场景：给连接方向选择展示颜色。
+function connectionDecisionColor(decision: string) {
+  if (decision === 'direct') {
+    return 'green'
+  }
+  if (decision === 'proxy') {
+    return 'blue'
+  }
+  if (decision === 'reject') {
+    return 'red'
+  }
+  return 'default'
+}
+
+// 适用场景：连接流水排序，保持域名在 IP 前面。
+function compareConnections(left: ConnectionRow, right: ConnectionRow) {
+  const leftRank = connectionIsDomain(left) ? 0 : 1
+  const rightRank = connectionIsDomain(right) ? 0 : 1
+  if (leftRank !== rightRank) {
+    return leftRank - rightRank
+  }
+  if (connectionSort.value !== 'target') {
+    const delta = connectionSortValue(right) - connectionSortValue(left)
+    if (delta !== 0) {
+      return delta
+    }
+  }
+  return compareConnectionTarget(left, right)
+}
+
+// 适用场景：根据用户选择返回连接排序用流量值。
+function connectionSortValue(item: ConnectionRow) {
+  if (connectionSort.value === 'upload') {
+    return item.upload || 0
+  }
+  if (connectionSort.value === 'download') {
+    return item.download || 0
+  }
+  return item.total || 0
+}
+
+// 适用场景：判断连接目标是否为域名。
+function connectionIsDomain(item: ConnectionRow) {
+  const host = (item.host || '').trim()
+  return host !== '' && !looksLikeIP(host)
+}
+
+// 适用场景：比较连接目标，域名按英文排序，IPv4 按数值排序。
+function compareConnectionTarget(left: ConnectionRow, right: ConnectionRow) {
+  const leftTarget = connectionSortTarget(left)
+  const rightTarget = connectionSortTarget(right)
+  const leftIPv4 = ipv4SortValue(leftTarget)
+  const rightIPv4 = ipv4SortValue(rightTarget)
+  if (leftIPv4 !== null && rightIPv4 !== null) {
+    return leftIPv4 - rightIPv4
+  }
+  return leftTarget.localeCompare(rightTarget, 'en', { numeric: true, sensitivity: 'base' })
+}
+
+// 适用场景：取连接排序目标，优先使用域名，其次目标 IP。
+function connectionSortTarget(item: ConnectionRow) {
+  return (item.host || item.destination_ip || item.destination || '').trim().toLowerCase()
+}
+
+// 适用场景：粗略判断目标是否是 IP。
+function looksLikeIP(value: string) {
+  const clean = value.trim().replace(/^\[/, '').replace(/\]$/, '')
+  return ipv4SortValue(clean) !== null || clean.includes(':')
+}
+
+// 适用场景：把 IPv4 转成可比较数值，非 IPv4 返回空。
+function ipv4SortValue(value: string) {
+  const parts = value.trim().split('.')
+  if (parts.length !== 4) {
+    return null
+  }
+  let result = 0
+  for (const part of parts) {
+    if (!/^\d+$/.test(part)) {
+      return null
+    }
+    const number = Number(part)
+    if (number < 0 || number > 255) {
+      return null
+    }
+    result = result * 256 + number
+  }
+  return result
+}
+
 // 适用场景：提交登录表单。
 async function login() {
   loginError.value = ''
@@ -1566,6 +1824,7 @@ async function login() {
   token.value = data.token
   localStorage.setItem('sboxctl_token', data.token)
   await fetchState()
+  await fetchConnections()
 }
 
 // 适用场景：首次在 Web 页面初始化账号密码。
@@ -1784,6 +2043,11 @@ async function saveAll(confirmOverwrite: boolean | Event = false) {
           primary: normalizeGroupMode(group.mode) === 'primary_backup' ? group.primary : '',
           members: arrayOrEmpty(group.members),
         })),
+        inbound: {
+          inbound_mode: normalizedInboundMode(inboundMode.value),
+          mixed_listen: mixedListen.value,
+          mixed_port: Number(mixedPort.value),
+        },
         dynamic_outbound: dynamicOutbound.value,
         force_proxy: forceProxy.value,
         force_direct: forceDirect.value,
@@ -1968,6 +2232,7 @@ async function boot() {
     await fetchHealth(false)
     if (token.value && health.value && !health.value.setup_required) {
       await fetchState()
+      await fetchConnections()
     }
   } catch (error) {
     pageError.value = error instanceof Error ? error.message : String(error)
@@ -1984,8 +2249,13 @@ const uptimeTimer = window.setInterval(() => {
   nowTick.value = Date.now()
 }, 1000)
 
+const connectionsTimer = window.setInterval(() => {
+  void fetchConnections()
+}, 2000)
+
 onUnmounted(() => {
   window.clearInterval(uptimeTimer)
+  window.clearInterval(connectionsTimer)
 })
 </script>
 
@@ -2691,6 +2961,35 @@ onUnmounted(() => {
 
       <section class="rules-column">
         <a-tabs class="rule-tabs" size="small">
+          <a-tab-pane key="inbound" tab="入口">
+            <div class="rule-pane">
+              <div class="pane-title">
+                <strong>入口配置</strong>
+                <span>mixed 监听</span>
+              </div>
+              <div class="form-grid">
+                <label class="field-row">
+                  <span>模式</span>
+                  <a-segmented
+                    v-model:value="inboundMode"
+                    :options="[
+                      { label: 'TUN', value: 'tun' },
+                      { label: 'Mixed', value: 'mixed' },
+                    ]"
+                  />
+                </label>
+                <label class="field-row">
+                  <span>mixed listen</span>
+                  <a-input v-model:value="mixedListen" placeholder="0.0.0.0" />
+                </label>
+                <label class="field-row">
+                  <span>mixed port</span>
+                  <a-input-number v-model:value="mixedPort" :min="1" :max="65535" />
+                </label>
+              </div>
+            </div>
+          </a-tab-pane>
+
           <a-tab-pane key="proxy" tab="强制走代理">
             <div class="rule-pane">
               <div class="pane-title">
@@ -2837,6 +3136,70 @@ onUnmounted(() => {
                 </dl>
                 <p v-for="note in routeCheckResult.notes" :key="note">{{ note }}</p>
               </section>
+            </div>
+          </a-tab-pane>
+
+          <a-tab-pane key="connections" tab="连接">
+            <div class="rule-pane connections-pane">
+              <div class="pane-title">
+                <strong>当前连接</strong>
+                <span>{{ filteredConnections.length }} / {{ connections.length }}</span>
+              </div>
+              <div class="connection-toolbar">
+                <a-input
+                  v-model:value="connectionFilter"
+                  placeholder="过滤域名、IP、来源、规则"
+                />
+                <a-select v-model:value="connectionSort" class="connection-sort-select">
+                  <a-select-option value="total">总流量</a-select-option>
+                  <a-select-option value="download">下载</a-select-option>
+                  <a-select-option value="upload">上传</a-select-option>
+                  <a-select-option value="target">目标</a-select-option>
+                </a-select>
+                <a-segmented
+                  v-model:value="connectionDecisionFilter"
+                  :options="[
+                    { label: '全部', value: 'all' },
+                    { label: '代理', value: 'proxy' },
+                    { label: '直连', value: 'direct' },
+                    { label: '拦截', value: 'reject' },
+                  ]"
+                />
+              </div>
+              <div class="connection-summary">
+                <span>上传 {{ formatBytes(connectionUploadTotal) }}</span>
+                <span>下载 {{ formatBytes(connectionDownloadTotal) }}</span>
+                <span>{{ connectionsUpdatedAt ? formatTime(connectionsUpdatedAt) : '未刷新' }}</span>
+                <a-tag :color="connectionsLoading ? 'gold' : 'green'">
+                  {{ connectionsLoading ? '刷新中' : '实时' }}
+                </a-tag>
+              </div>
+              <a-alert v-if="connectionsError" :message="connectionsError" type="error" show-icon />
+              <div class="connection-list">
+                <div
+                  v-for="item in filteredConnections.slice(0, 200)"
+                  :key="item.id || `${item.source}-${item.destination}-${item.total}`"
+                  class="connection-row"
+                >
+                  <div class="connection-main">
+                    <a-tag :color="connectionDecisionColor(item.decision)">
+                      {{ connectionDecisionText(item.decision) }}
+                    </a-tag>
+                    <strong>{{ item.destination || '-' }}</strong>
+                    <small>{{ item.network.toUpperCase() }} {{ item.source }}</small>
+                  </div>
+                  <div class="connection-meta">
+                    <span>{{ formatBytes(item.total) }}</span>
+                    <span>↓ {{ formatBytes(item.download) }}</span>
+                    <span>↑ {{ formatBytes(item.upload) }}</span>
+                  </div>
+                  <div class="connection-rule">
+                    <span>{{ item.chain_text || '-' }}</span>
+                    <small>{{ item.rule || 'final' }}</small>
+                  </div>
+                </div>
+                <div v-if="filteredConnections.length === 0" class="empty-line">无连接</div>
+              </div>
             </div>
           </a-tab-pane>
 
