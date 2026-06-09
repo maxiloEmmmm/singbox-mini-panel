@@ -76,6 +76,20 @@ func TestParseHY2URI(t *testing.T) {
 	}
 }
 
+// TestParseAnyTLSURI 验证 AnyTLS 分享链接能解析为后端。
+func TestParseAnyTLSURI(t *testing.T) {
+	node, err := ParseAnyTLSURI("anytls://secret@example.com:443?sni=sni.example&insecure=1&idle_session_check_interval=10s&idle_session_timeout=20s&min_idle_session=2#A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.Password != "secret" || node.Server != "example.com" || node.Port != 443 || !node.Insecure {
+		t.Fatalf("anytls 基本字段解析错误: %+v", node)
+	}
+	if node.SNI != "sni.example" || node.IdleSessionCheckInterval != "10s" || node.IdleSessionTimeout != "20s" || node.MinIdleSession != 2 {
+		t.Fatalf("anytls 可选字段解析错误: %+v", node)
+	}
+}
+
 // TestParseVMessURI 验证 v2rayN VMess 分享链接能解析。
 func TestParseVMessURI(t *testing.T) {
 	raw := `{"v":"2","ps":"jp-vmess","add":"example.com","port":"443","id":"bf000d23-0752-40b4-affe-68f7707a9661","aid":"0","scy":"auto","net":"ws","host":"cdn.example.com","path":"/ws","tls":"tls","sni":"sni.example.com"}`
@@ -120,16 +134,18 @@ func TestParseSSLegacyURI(t *testing.T) {
 func TestBackendProtocolSort(t *testing.T) {
 	nodes := []ProxyBackend{
 		&SSBackend{Tag: "b-ss", Server: "s.example", Port: 8388},
+		&AnyTLSBackend{Tag: "d-anytls", Server: "a.example", Port: 443},
 		&TrojanBackend{Tag: "c-trojan", Server: "t.example", Port: 443},
 		&VMessBackend{Tag: "a-vmess", Server: "v.example", Port: 443},
 		&HY2Backend{Tag: "z-hy2", Server: "h.example", Port: 443},
 	}
 	SortBackendsByProtocol(nodes)
 	if nodes[0].BackendProtocol() != "hy2" || nodes[1].BackendProtocol() != "vmess" ||
-		nodes[2].BackendProtocol() != "trojan" || nodes[3].BackendProtocol() != "ss" {
-		t.Fatalf("协议排序错误: %s/%s/%s/%s",
+		nodes[2].BackendProtocol() != "trojan" || nodes[3].BackendProtocol() != "anytls" ||
+		nodes[4].BackendProtocol() != "ss" {
+		t.Fatalf("协议排序错误: %s/%s/%s/%s/%s",
 			nodes[0].BackendProtocol(), nodes[1].BackendProtocol(),
-			nodes[2].BackendProtocol(), nodes[3].BackendProtocol())
+			nodes[2].BackendProtocol(), nodes[3].BackendProtocol(), nodes[4].BackendProtocol())
 	}
 }
 
@@ -140,13 +156,14 @@ func TestNormalizeStaticBackendsForSaveFlatProtocols(t *testing.T) {
 		{Protocol: "vmess", Key: "vm", Server: "vm.example", Port: 443, UUID: "u", TLS: true, Transport: "ws", Path: "/ws"},
 		{Protocol: "ss", Key: "ss", Server: "ss.example", Port: 8388, Method: "aes-128-gcm", Password: "p", Plugin: "simple-obfs", PluginOpts: "obfs=http"},
 		{Protocol: "trojan", Key: "tj", Server: "tj.example", Port: 443, Password: "p", SNI: "sni.example", TLS: true, Transport: "ws", Path: "/ws"},
+		{Protocol: "anytls", Key: "at", Server: "at.example", Port: 443, Password: "p", SNI: "at-sni.example", Insecure: true, IdleSessionCheckInterval: "10s", IdleSessionTimeout: "20s", MinIdleSession: 2},
 	}
 	got, err := NormalizeStaticBackendsForSave(nodes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 4 || got[0].Protocol != "hy2" || got[1].Protocol != "vmess" ||
-		got[2].Protocol != "ss" || got[3].Protocol != "trojan" {
+	if len(got) != 5 || got[0].Protocol != "hy2" || got[1].Protocol != "vmess" ||
+		got[2].Protocol != "ss" || got[3].Protocol != "trojan" || got[4].Protocol != "anytls" {
 		t.Fatalf("静态协议清洗错误: %+v", got)
 	}
 	if got[1].Security != "auto" || got[1].Password != "" {
@@ -158,6 +175,10 @@ func TestNormalizeStaticBackendsForSaveFlatProtocols(t *testing.T) {
 	if !got[3].TLS || got[3].SNI != "sni.example" || got[3].Transport != "ws" || got[3].Path != "/ws" {
 		t.Fatalf("trojan 字段清洗错误: %+v", got[3])
 	}
+	if got[4].SNI != "at-sni.example" || !got[4].Insecure || got[4].IdleSessionCheckInterval != "10s" ||
+		got[4].IdleSessionTimeout != "20s" || got[4].MinIdleSession != 2 {
+		t.Fatalf("anytls 字段清洗错误: %+v", got[4])
+	}
 }
 
 // TestSubscriptionCacheEnvelope 验证订阅缓存按协议恢复具体结构。
@@ -167,14 +188,16 @@ func TestSubscriptionCacheEnvelope(t *testing.T) {
 		&VMessBackend{Tag: "vmess-a", Server: "v.example", Port: 443},
 		&SSBackend{Tag: "ss-a", Server: "s.example", Port: 8388, Method: "aes-128-gcm", Password: "p"},
 		&TrojanBackend{Tag: "trojan-a", Server: "t.example", Port: 443, Password: "p", TLS: true},
+		&AnyTLSBackend{Tag: "anytls-a", Server: "a.example", Port: 443, Password: "p"},
 	}
 	data := []byte(mustJSON(t, SubscriptionCacheFromBackends(nodes)))
 	got, err := BackendsFromSubscriptionCache(data)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 4 || got[0].BackendProtocol() != "hy2" || got[1].BackendProtocol() != "vmess" ||
-		got[2].BackendProtocol() != "ss" || got[3].BackendProtocol() != "trojan" {
+	if len(got) != 5 || got[0].BackendProtocol() != "hy2" || got[1].BackendProtocol() != "vmess" ||
+		got[2].BackendProtocol() != "ss" || got[3].BackendProtocol() != "trojan" ||
+		got[4].BackendProtocol() != "anytls" {
 		t.Fatalf("缓存恢复错误: %+v", got)
 	}
 }
@@ -215,6 +238,27 @@ func TestFetchSubscriptionParsesTrojan(t *testing.T) {
 	node := nodes[0].(*TrojanBackend)
 	if !node.TLS || node.SNI != "sni.example" || node.Transport != "ws" || node.Path != "/ws" || node.Host != "host.example" {
 		t.Fatalf("trojan 参数解析错误: %+v", node)
+	}
+}
+
+// TestFetchSubscriptionParsesAnyTLS 验证订阅正文中的 AnyTLS 节点会进入缓存节点列表。
+func TestFetchSubscriptionParsesAnyTLS(t *testing.T) {
+	line := "anytls://secret@example.com:443?sni=sni.example&idle_session_check_interval=10s#anytls-node"
+	body := base64.StdEncoding.EncodeToString([]byte(line + "\n"))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+	nodes, skipped, failed, err := FetchSubscription(server.Client(), Subscription{Name: "anytls", URL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if skipped != 0 || failed != 0 || len(nodes) != 1 || nodes[0].BackendProtocol() != "anytls" {
+		t.Fatalf("anytls 订阅解析错误 nodes=%+v skipped=%d failed=%d", nodes, skipped, failed)
+	}
+	node := nodes[0].(*AnyTLSBackend)
+	if node.SNI != "sni.example" || node.IdleSessionCheckInterval != "10s" {
+		t.Fatalf("anytls 参数解析错误: %+v", node)
 	}
 }
 
@@ -331,6 +375,31 @@ func TestBuildTrojanOutbound(t *testing.T) {
 	headers := transport["headers"].(map[string]any)
 	if transport["type"] != "ws" || transport["path"] != "/ws" || headers["Host"] != "host.example" {
 		t.Fatalf("Trojan transport 字段错误: %+v", transport)
+	}
+}
+
+// TestBuildAnyTLSOutbound 验证 AnyTLS 节点生成 sing-box 出站配置。
+func TestBuildAnyTLSOutbound(t *testing.T) {
+	out := BuildAnyTLSOutbound(AnyTLSBackend{
+		Tag:                      "anytls-a",
+		Server:                   "example.com",
+		Port:                     443,
+		Password:                 "secret",
+		SNI:                      "sni.example",
+		Insecure:                 true,
+		IdleSessionCheckInterval: "10s",
+		IdleSessionTimeout:       "20s",
+		MinIdleSession:           2,
+	})
+	if out["type"] != "anytls" || out["server_port"] != 443 || out["password"] != "secret" {
+		t.Fatalf("AnyTLS 基础字段错误: %+v", out)
+	}
+	if out["idle_session_check_interval"] != "10s" || out["idle_session_timeout"] != "20s" || out["min_idle_session"] != 2 {
+		t.Fatalf("AnyTLS 空闲会话字段错误: %+v", out)
+	}
+	tls := out["tls"].(map[string]any)
+	if tls["server_name"] != "sni.example" || tls["insecure"] != true || tls["enabled"] != true {
+		t.Fatalf("AnyTLS TLS 字段错误: %+v", tls)
 	}
 }
 
@@ -1012,6 +1081,39 @@ func TestCleanupTunNetworkScriptCoversAggressivePaths(t *testing.T) {
 	for _, item := range required {
 		if !strings.Contains(script, item) {
 			t.Fatalf("清理脚本缺少关键片段 %q", item)
+		}
+	}
+}
+
+// TestCleanupAutoRedirectRouteResidueScriptIsNarrow 验证启动前清理只匹配 auto_redirect 指纹。
+func TestCleanupAutoRedirectRouteResidueScriptIsNarrow(t *testing.T) {
+	script := CleanupAutoRedirectRouteResidueScript()
+	cmd := exec.Command("sh", "-n")
+	cmd.Stdin = strings.NewReader(script)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("auto_redirect 清理脚本语法错误: %v\n%s", err, output)
+	}
+	required := []string{
+		`$1 == "1:"`,
+		`grep -Eq "^local ${loopback}([ /]|$)"`,
+		`ip "$fam" route flush table "$table"`,
+		`ip "$fam" rule del pref 1 table "$table"`,
+	}
+	for _, item := range required {
+		if !strings.Contains(script, item) {
+			t.Fatalf("auto_redirect 清理脚本缺少保护片段 %q", item)
+		}
+	}
+	forbidden := []string{
+		"ip route flush cache",
+		"nft delete table",
+		"iptables",
+		"pkill",
+		"ip link del",
+	}
+	for _, item := range forbidden {
+		if strings.Contains(script, item) {
+			t.Fatalf("auto_redirect 清理脚本不应包含高风险片段 %q", item)
 		}
 	}
 }

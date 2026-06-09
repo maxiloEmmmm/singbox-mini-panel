@@ -17,11 +17,11 @@ interface BackendNode {
   port: number
   /** 节点来源。 */
   source: string
-  /** HY2 静态节点认证密码。 */
+  /** HY2/SS/Trojan/AnyTLS 静态节点认证密码。 */
   password?: string
-  /** HY2 静态节点 SNI。 */
+  /** TLS 类静态节点 SNI。 */
   sni?: string
-  /** HY2 静态节点是否跳过证书校验。 */
+  /** TLS 类静态节点是否跳过证书校验。 */
   insecure?: boolean
   /** HY2 静态节点混淆密码。 */
   obfs_password?: string
@@ -45,6 +45,12 @@ interface BackendNode {
   plugin?: string
   /** Shadowsocks SIP003 插件参数。 */
   plugin_opts?: string
+  /** AnyTLS 空闲会话检查间隔。 */
+  idle_session_check_interval?: string
+  /** AnyTLS 空闲会话超时时间。 */
+  idle_session_timeout?: string
+  /** AnyTLS 至少保留的空闲会话数量。 */
+  min_idle_session?: number
 }
 
 /** 订阅分组适用于左侧纵向列表。 */
@@ -310,6 +316,12 @@ interface StaticForm {
   method: string
   plugin: string
   plugin_opts: string
+  /** AnyTLS 空闲会话检查间隔。 */
+  idle_session_check_interval: string
+  /** AnyTLS 空闲会话超时时间。 */
+  idle_session_timeout: string
+  /** AnyTLS 至少保留的空闲会话数量。 */
+  min_idle_session: number
 }
 
 /** 订阅编辑表单。 */
@@ -489,7 +501,7 @@ const helpSections: HelpSection[] = [
   {
     title: 'Backend',
     items: [
-      '静态节点支持扁平配置的 HY2、VMess、SS 和 Trojan；订阅目前解析 HY2、VMess、SS 和 Trojan，其它协议先跳过。',
+      '静态节点支持扁平配置的 HY2、VMess、SS、Trojan 和 AnyTLS；订阅目前解析 HY2、VMess、SS、Trojan 和 AnyTLS，其它协议先跳过。',
       '节点 key 在各自范围内必须唯一；订阅内 key 只要求订阅内唯一，跨订阅可重复。',
       '删除订阅或静态节点时，如果动态组、动态出口或当前出口仍引用，会拒绝保存。',
       '静态节点的新增、修改和删除也都是临时配置，刷新页面前会提示未保存改动。',
@@ -861,6 +873,9 @@ function serializeStaticNodes(nodes: BackendNode[]) {
     method: node.method || '',
     plugin: node.plugin || '',
     plugin_opts: node.plugin_opts || '',
+    idle_session_check_interval: node.idle_session_check_interval || '',
+    idle_session_timeout: node.idle_session_timeout || '',
+    min_idle_session: node.min_idle_session || 0,
   })))
 }
 
@@ -890,6 +905,9 @@ function normalizeStaticProtocol(protocol: string) {
   }
   if (protocol === 'trojan') {
     return 'trojan'
+  }
+  if (protocol === 'anytls') {
+    return 'anytls'
   }
   return 'hy2'
 }
@@ -960,6 +978,9 @@ function emptyStaticForm(): StaticForm {
     method: 'aes-128-gcm',
     plugin: '',
     plugin_opts: '',
+    idle_session_check_interval: '',
+    idle_session_timeout: '',
+    min_idle_session: 0,
   }
 }
 
@@ -967,8 +988,10 @@ function emptyStaticForm(): StaticForm {
 function updateStaticProtocol(protocol: string) {
   const nextProtocol = normalizeStaticProtocol(protocol)
   staticForm.value.protocol = nextProtocol
-  if (nextProtocol === 'trojan') {
+  if (nextProtocol === 'trojan' || nextProtocol === 'anytls') {
     staticForm.value.port = Number(staticForm.value.port) || 443
+  }
+  if (nextProtocol === 'trojan') {
     staticForm.value.tls = true
   }
 }
@@ -1006,6 +1029,9 @@ function staticFormFromNode(node: BackendNode): StaticForm {
     method: node.method || 'aes-128-gcm',
     plugin: node.plugin || '',
     plugin_opts: node.plugin_opts || '',
+    idle_session_check_interval: node.idle_session_check_interval || '',
+    idle_session_timeout: node.idle_session_timeout || '',
+    min_idle_session: node.min_idle_session || 0,
   }
 }
 
@@ -1051,7 +1077,7 @@ function saveStaticDraft() {
     pageError.value = '静态节点 server 必填'
     return
   }
-  if ((protocol === 'hy2' || protocol === 'trojan') && !item.password.trim()) {
+  if ((protocol === 'hy2' || protocol === 'trojan' || protocol === 'anytls') && !item.password.trim()) {
     pageError.value = `${protocol.toUpperCase()} 静态节点 password 必填`
     return
   }
@@ -1075,7 +1101,7 @@ function saveStaticDraft() {
     server: item.server.trim(),
     port: Number(item.port) || 443,
     source: 'static',
-    password: protocol === 'hy2' || protocol === 'ss' || protocol === 'trojan' ? item.password.trim() : '',
+    password: protocol === 'hy2' || protocol === 'ss' || protocol === 'trojan' || protocol === 'anytls' ? item.password.trim() : '',
     sni: item.sni.trim(),
     insecure: item.insecure,
     obfs_password: protocol === 'hy2' ? item.obfs_password.trim() : '',
@@ -1089,6 +1115,9 @@ function saveStaticDraft() {
     method: protocol === 'ss' ? item.method.trim() : '',
     plugin: protocol === 'ss' ? item.plugin.trim() : '',
     plugin_opts: protocol === 'ss' ? item.plugin_opts.trim() : '',
+    idle_session_check_interval: protocol === 'anytls' ? item.idle_session_check_interval.trim() : '',
+    idle_session_timeout: protocol === 'anytls' ? item.idle_session_timeout.trim() : '',
+    min_idle_session: protocol === 'anytls' ? Number(item.min_idle_session) || 0 : 0,
   }
   if (staticEditingKey.value) {
     if (staticEditingKey.value !== key) {
@@ -1936,6 +1965,9 @@ function protocolColor(node: BackendNode) {
   if (node.protocol === 'trojan') {
     return 'gold'
   }
+  if (node.protocol === 'anytls') {
+    return 'cyan'
+  }
   if (node.protocol === 'ss') {
     return 'green'
   }
@@ -2029,6 +2061,9 @@ async function saveAll(confirmOverwrite: boolean | Event = false) {
           method: node.method || '',
           plugin: node.plugin || '',
           plugin_opts: node.plugin_opts || '',
+          idle_session_check_interval: node.idle_session_check_interval || '',
+          idle_session_timeout: node.idle_session_timeout || '',
+          min_idle_session: node.min_idle_session || 0,
         })),
         subscriptions: subscriptions.value.map((subscription) => ({
           key: subscription.key,
@@ -2830,6 +2865,7 @@ onUnmounted(() => {
                   <a-select-option value="vmess">VMess</a-select-option>
                   <a-select-option value="ss">SS</a-select-option>
                   <a-select-option value="trojan">Trojan</a-select-option>
+                  <a-select-option value="anytls">AnyTLS</a-select-option>
                 </a-select>
               </label>
               <label class="field-row">
@@ -2848,7 +2884,10 @@ onUnmounted(() => {
                 <span>port</span>
                 <a-input v-model:value="staticForm.port" type="number" />
               </label>
-              <label v-if="staticForm.protocol === 'hy2' || staticForm.protocol === 'trojan'" class="field-row">
+              <label
+                v-if="staticForm.protocol === 'hy2' || staticForm.protocol === 'trojan' || staticForm.protocol === 'anytls'"
+                class="field-row"
+              >
                 <span>password</span>
                 <a-input v-model:value="staticForm.password" />
               </label>
@@ -2860,6 +2899,20 @@ onUnmounted(() => {
                 <span>obfs password</span>
                 <a-input v-model:value="staticForm.obfs_password" />
               </label>
+              <template v-if="staticForm.protocol === 'anytls'">
+                <label class="field-row">
+                  <span>idle check</span>
+                  <a-input v-model:value="staticForm.idle_session_check_interval" placeholder="30s" />
+                </label>
+                <label class="field-row">
+                  <span>idle timeout</span>
+                  <a-input v-model:value="staticForm.idle_session_timeout" placeholder="30s" />
+                </label>
+                <label class="field-row">
+                  <span>min idle</span>
+                  <a-input v-model:value="staticForm.min_idle_session" type="number" />
+                </label>
+              </template>
               <template v-if="staticForm.protocol === 'vmess'">
                 <label class="field-row">
                   <span>uuid</span>
