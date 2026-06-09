@@ -358,6 +358,8 @@ const (
 	staticProtocolSS = "ss"
 	// staticProtocolTrojan 表示静态节点使用 Trojan 协议。
 	staticProtocolTrojan = "trojan"
+	// staticProtocolAnyTLS 表示静态节点使用 AnyTLS 协议。
+	staticProtocolAnyTLS = "anytls"
 )
 
 // PolicyConfig 表示路由最终策略，适用于多个代理后端场景。
@@ -554,9 +556,37 @@ type TrojanBackend struct {
 	Source string `yaml:"-" json:"-"`
 }
 
+// AnyTLSBackend 表示一个 AnyTLS 出站节点。
+type AnyTLSBackend struct {
+	// Key 是静态列表或订阅内唯一机器标识。
+	Key string `yaml:"key" json:"key"`
+	// Tag 是 sing-box outbound 的唯一标识。
+	Tag string `yaml:"tag" json:"tag"`
+	// Name 是人类可读节点名称。
+	Name string `yaml:"name" json:"name"`
+	// Server 是 AnyTLS 服务端域名或 IP。
+	Server string `yaml:"server" json:"server"`
+	// Port 是 AnyTLS 服务端端口。
+	Port int `yaml:"port" json:"port"`
+	// Password 是 AnyTLS 认证密码。
+	Password string `yaml:"password" json:"password"`
+	// SNI 是 TLS SNI。
+	SNI string `yaml:"sni" json:"sni"`
+	// Insecure 控制是否跳过 TLS 证书校验。
+	Insecure bool `yaml:"insecure" json:"insecure"`
+	// IdleSessionCheckInterval 是空闲会话检查间隔。
+	IdleSessionCheckInterval string `yaml:"idle_session_check_interval,omitempty" json:"idle_session_check_interval,omitempty"`
+	// IdleSessionTimeout 是空闲会话超时时间。
+	IdleSessionTimeout string `yaml:"idle_session_timeout,omitempty" json:"idle_session_timeout,omitempty"`
+	// MinIdleSession 是至少保留的空闲会话数量。
+	MinIdleSession int `yaml:"min_idle_session,omitempty" json:"min_idle_session,omitempty"`
+	// Source 记录节点来自 static 还是 subscription，便于日志定位。
+	Source string `yaml:"-" json:"-"`
+}
+
 // StaticBackend 表示 Web 可编辑的扁平静态节点。
 type StaticBackend struct {
-	// Protocol 是节点协议，支持 hy2、vmess、ss 和 trojan。
+	// Protocol 是节点协议，支持 hy2、vmess、ss、trojan 和 anytls。
 	Protocol string `yaml:"protocol,omitempty" json:"protocol"`
 	// Key 是静态列表内唯一机器标识。
 	Key string `yaml:"key,omitempty" json:"key"`
@@ -568,7 +598,7 @@ type StaticBackend struct {
 	Server string `yaml:"server,omitempty" json:"server"`
 	// Port 是服务端端口。
 	Port int `yaml:"port,omitempty" json:"port"`
-	// Password 是 HY2 认证密码或 Shadowsocks 密码。
+	// Password 是 HY2、Shadowsocks、Trojan 或 AnyTLS 密码。
 	Password string `yaml:"password,omitempty" json:"password"`
 	// SNI 是 TLS SNI。
 	SNI string `yaml:"sni,omitempty" json:"sni"`
@@ -596,6 +626,12 @@ type StaticBackend struct {
 	Plugin string `yaml:"plugin,omitempty" json:"plugin"`
 	// PluginOpts 是 Shadowsocks SIP003 插件参数。
 	PluginOpts string `yaml:"plugin_opts,omitempty" json:"plugin_opts"`
+	// IdleSessionCheckInterval 是 AnyTLS 空闲会话检查间隔。
+	IdleSessionCheckInterval string `yaml:"idle_session_check_interval,omitempty" json:"idle_session_check_interval"`
+	// IdleSessionTimeout 是 AnyTLS 空闲会话超时时间。
+	IdleSessionTimeout string `yaml:"idle_session_timeout,omitempty" json:"idle_session_timeout"`
+	// MinIdleSession 是 AnyTLS 至少保留的空闲会话数量。
+	MinIdleSession int `yaml:"min_idle_session,omitempty" json:"min_idle_session"`
 	// Source 记录节点来源，便于运行日志定位。
 	Source string `yaml:"-" json:"-"`
 }
@@ -628,6 +664,8 @@ type SubscriptionCacheNode struct {
 	SS *SSBackend `json:"ss,omitempty"`
 	// Trojan 保存 Trojan 节点。
 	Trojan *TrojanBackend `json:"trojan,omitempty"`
+	// AnyTLS 保存 AnyTLS 节点。
+	AnyTLS *AnyTLSBackend `json:"anytls,omitempty"`
 }
 
 // BackendTag 返回 HY2 节点 tag。
@@ -830,6 +868,56 @@ func (b *TrojanBackend) BuildOutbound() map[string]any {
 	return BuildTrojanOutbound(*b)
 }
 
+// BackendTag 返回 AnyTLS 节点 tag。
+func (b *AnyTLSBackend) BackendTag() string {
+	return b.Tag
+}
+
+// BackendKey 返回 AnyTLS 节点范围内 key。
+func (b *AnyTLSBackend) BackendKey() string {
+	return firstNonEmpty(b.Key, b.Tag)
+}
+
+// BackendName 返回 AnyTLS 展示名称。
+func (b *AnyTLSBackend) BackendName() string {
+	return firstNonEmpty(b.Name, b.Key, b.Tag)
+}
+
+// BackendProtocol 返回 AnyTLS 协议名。
+func (b *AnyTLSBackend) BackendProtocol() string {
+	return "anytls"
+}
+
+// BackendServer 返回 AnyTLS 服务端。
+func (b *AnyTLSBackend) BackendServer() string {
+	return b.Server
+}
+
+// BackendPort 返回 AnyTLS 服务端端口。
+func (b *AnyTLSBackend) BackendPort() int {
+	return b.Port
+}
+
+// SetBackendTag 写入 AnyTLS 节点 tag。
+func (b *AnyTLSBackend) SetBackendTag(tag string) {
+	b.Tag = tag
+}
+
+// SetBackendKey 写入 AnyTLS 节点 key。
+func (b *AnyTLSBackend) SetBackendKey(key string) {
+	b.Key = key
+}
+
+// SetBackendSource 写入 AnyTLS 节点来源。
+func (b *AnyTLSBackend) SetBackendSource(source string) {
+	b.Source = source
+}
+
+// BuildOutbound 构造 AnyTLS sing-box outbound。
+func (b *AnyTLSBackend) BuildOutbound() map[string]any {
+	return BuildAnyTLSOutbound(*b)
+}
+
 // BackendTag 返回静态节点运行时 tag。
 func (b *StaticBackend) BackendTag() string {
 	return b.Tag
@@ -886,6 +974,9 @@ func (b *StaticBackend) BuildOutbound() map[string]any {
 		return node.BuildOutbound()
 	case staticProtocolTrojan:
 		node := b.toTrojanBackend()
+		return node.BuildOutbound()
+	case staticProtocolAnyTLS:
+		node := b.toAnyTLSBackend()
 		return node.BuildOutbound()
 	default:
 		node := b.toHY2Backend()
@@ -962,6 +1053,24 @@ func (b *StaticBackend) toTrojanBackend() TrojanBackend {
 		Path:      b.Path,
 		Host:      b.Host,
 		Source:    b.Source,
+	}
+}
+
+// toAnyTLSBackend 将扁平静态配置投影为 AnyTLS 运行节点。
+func (b *StaticBackend) toAnyTLSBackend() AnyTLSBackend {
+	return AnyTLSBackend{
+		Key:                      b.Key,
+		Tag:                      b.Tag,
+		Name:                     b.Name,
+		Server:                   b.Server,
+		Port:                     b.Port,
+		Password:                 b.Password,
+		SNI:                      b.SNI,
+		Insecure:                 b.Insecure,
+		IdleSessionCheckInterval: b.IdleSessionCheckInterval,
+		IdleSessionTimeout:       b.IdleSessionTimeout,
+		MinIdleSession:           b.MinIdleSession,
+		Source:                   b.Source,
 	}
 }
 
@@ -1346,6 +1455,12 @@ type WebBackend struct {
 	Plugin string `json:"plugin,omitempty"`
 	// PluginOpts 是 Shadowsocks SIP003 插件参数。
 	PluginOpts string `json:"plugin_opts,omitempty"`
+	// IdleSessionCheckInterval 是 AnyTLS 空闲会话检查间隔。
+	IdleSessionCheckInterval string `json:"idle_session_check_interval,omitempty"`
+	// IdleSessionTimeout 是 AnyTLS 空闲会话超时时间。
+	IdleSessionTimeout string `json:"idle_session_timeout,omitempty"`
+	// MinIdleSession 是 AnyTLS 至少保留的空闲会话数量。
+	MinIdleSession int `json:"min_idle_session,omitempty"`
 }
 
 // WebSubscription 表示前端展示的订阅分组。
@@ -1926,6 +2041,16 @@ backend:
     #   transport: ws
     #   path: /
     #   host: example.com
+    # - protocol: anytls
+    #   key: anytls-a
+    #   server: example.com
+    #   port: 443
+    #   password: change-me
+    #   sni: example.com
+    #   insecure: false
+    #   idle_session_check_interval:
+    #   idle_session_timeout:
+    #   min_idle_session: 0
   subscription:
     # - name: main
     #   url: https://example.com/sub
@@ -4686,6 +4811,8 @@ func normalizeStaticProtocol(protocol string) string {
 		return staticProtocolSS
 	case staticProtocolTrojan:
 		return staticProtocolTrojan
+	case staticProtocolAnyTLS:
+		return staticProtocolAnyTLS
 	default:
 		return staticProtocolHY2
 	}
@@ -4754,6 +4881,16 @@ func NormalizeStaticBackendsForSave(nodes []StaticBackend) ([]StaticBackend, err
 			clean.Transport = strings.ToLower(strings.TrimSpace(node.Transport))
 			clean.Path = strings.TrimSpace(node.Path)
 			clean.Host = strings.TrimSpace(node.Host)
+		case staticProtocolAnyTLS:
+			if strings.TrimSpace(node.Password) == "" {
+				return nil, fmt.Errorf("静态节点 %s password 为空", node.Key)
+			}
+			clean.Password = strings.TrimSpace(node.Password)
+			clean.SNI = strings.TrimSpace(node.SNI)
+			clean.Insecure = node.Insecure
+			clean.IdleSessionCheckInterval = strings.TrimSpace(node.IdleSessionCheckInterval)
+			clean.IdleSessionTimeout = strings.TrimSpace(node.IdleSessionTimeout)
+			clean.MinIdleSession = node.MinIdleSession
 		default:
 			if strings.TrimSpace(node.Password) == "" {
 				return nil, fmt.Errorf("静态节点 %s password 为空", node.Key)
@@ -4828,6 +4965,9 @@ func WebBackendFromBackend(node ProxyBackend, source string) WebBackend {
 			item.Method = staticNode.Method
 			item.Plugin = staticNode.Plugin
 			item.PluginOpts = staticNode.PluginOpts
+			item.IdleSessionCheckInterval = staticNode.IdleSessionCheckInterval
+			item.IdleSessionTimeout = staticNode.IdleSessionTimeout
+			item.MinIdleSession = staticNode.MinIdleSession
 		}
 	}
 	return item
@@ -4854,8 +4994,10 @@ func webProtocolRank(protocol string) int {
 		return 1
 	case "trojan":
 		return 2
-	case "ss":
+	case "anytls":
 		return 3
+	case "ss":
+		return 4
 	default:
 		return 9
 	}
@@ -5068,6 +5210,9 @@ func (a *App) startSingBoxProcess() error {
 	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
 		return err
 	}
+	if err := a.cleanupAutoRedirectRouteResidue(); err != nil && a.Logger != nil {
+		a.Logger.Warn("清理 auto_redirect 残留失败 err=%v", err)
+	}
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
 		return err
@@ -5091,6 +5236,52 @@ func (a *App) startSingBoxProcess() error {
 		a.handleSingBoxExit(cmd, err)
 	}()
 	return a.waitSingBoxReady(singBoxReadyTimeout)
+}
+
+// cleanupAutoRedirectRouteResidue 清理 sing-tun auto_redirect 残留路由。
+func (a *App) cleanupAutoRedirectRouteResidue() error {
+	cmd := exec.Command("sh", "-c", CleanupAutoRedirectRouteResidueScript())
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
+	}
+	if a.Logger != nil && strings.TrimSpace(string(output)) != "" {
+		a.Logger.Warn("已清理 auto_redirect 残留: %s", strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// CleanupAutoRedirectRouteResidueScript 返回窄口径 auto_redirect 残留清理脚本。
+func CleanupAutoRedirectRouteResidueScript() string {
+	return `#!/bin/sh
+set -eu
+
+cleanup_family() {
+  fam="$1"
+  loopback="$2"
+  ip "$fam" rule show 2>/dev/null | awk '
+    $1 == "1:" && $0 ~ /lookup/ {
+      for (i = 1; i <= NF; i++) {
+        if ($i == "lookup" && (i + 1) <= NF) print $(i + 1)
+      }
+    }
+  ' | sort -u | while read -r table; do
+    case "$table" in
+      ''|local|main|default|0|253|254|255)
+        continue
+        ;;
+    esac
+    routes="$(ip "$fam" route show table "$table" 2>/dev/null || true)"
+    printf '%s\n' "$routes" | grep -Eq "^local ${loopback}([ /]|$)" || continue
+    ip "$fam" route flush table "$table" >/dev/null 2>&1 || true
+    while ip "$fam" rule del pref 1 table "$table" >/dev/null 2>&1; do :; done
+    printf '%s:%s\n' "$fam" "$table"
+  done
+}
+
+cleanup_family -4 127.0.0.1
+cleanup_family -6 ::1
+`
 }
 
 // handleSingBoxExit 处理 sing-box 子进程退出，异常退出会自动重拉。
@@ -5807,6 +5998,34 @@ func BuildTrojanOutbound(b TrojanBackend) map[string]any {
 	return out
 }
 
+// BuildAnyTLSOutbound 构造 sing-box anytls outbound。
+func BuildAnyTLSOutbound(b AnyTLSBackend) map[string]any {
+	out := map[string]any{
+		"type":        "anytls",
+		"tag":         b.Tag,
+		"server":      b.Server,
+		"server_port": b.Port,
+		"password":    b.Password,
+		"tls": map[string]any{
+			"enabled":  true,
+			"insecure": b.Insecure,
+		},
+	}
+	if b.SNI != "" {
+		out["tls"].(map[string]any)["server_name"] = b.SNI
+	}
+	if b.IdleSessionCheckInterval != "" {
+		out["idle_session_check_interval"] = b.IdleSessionCheckInterval
+	}
+	if b.IdleSessionTimeout != "" {
+		out["idle_session_timeout"] = b.IdleSessionTimeout
+	}
+	if b.MinIdleSession > 0 {
+		out["min_idle_session"] = b.MinIdleSession
+	}
+	return out
+}
+
 // BuildDynamicGroupOutbound 构造动态组 selector outbound。
 func BuildDynamicGroupOutbound(b DynamicGroupBackend) map[string]any {
 	out := map[string]any{
@@ -6081,7 +6300,7 @@ func ParseLocalRules(r io.Reader) ([]LocalRule, error) {
 	return rules, scanner.Err()
 }
 
-// FetchSubscription 下载并解析订阅，只保留 HY2、VMess、SS 和 Trojan。
+// FetchSubscription 下载并解析订阅，只保留 HY2、VMess、SS、Trojan 和 AnyTLS。
 func FetchSubscription(client *http.Client, sub Subscription) ([]ProxyBackend, int, int, error) {
 	req, err := http.NewRequest(http.MethodGet, sub.URL, nil)
 	if err != nil {
@@ -6139,6 +6358,15 @@ func FetchSubscription(client *http.Client, sub Subscription) ([]ProxyBackend, i
 		}
 		if strings.HasPrefix(line, "trojan://") {
 			node, err := ParseTrojanURI(line)
+			if err != nil {
+				failed++
+				continue
+			}
+			nodes = append(nodes, node)
+			continue
+		}
+		if strings.HasPrefix(line, "anytls://") {
+			node, err := ParseAnyTLSURI(line)
 			if err != nil {
 				failed++
 				continue
@@ -6406,6 +6634,46 @@ func ParseTrojanURI(raw string) (*TrojanBackend, error) {
 	}, nil
 }
 
+// ParseAnyTLSURI 解析 AnyTLS 分享链接。
+func ParseAnyTLSURI(raw string) (*AnyTLSBackend, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return nil, err
+	}
+	if u.Scheme != "anytls" {
+		return nil, fmt.Errorf("不是 anytls 协议")
+	}
+	if u.User == nil || u.Hostname() == "" {
+		return nil, fmt.Errorf("anytls 链接缺少认证或服务端")
+	}
+	password := u.User.Username()
+	if pass, ok := u.User.Password(); ok && pass != "" {
+		password = pass
+	}
+	if password == "" {
+		return nil, fmt.Errorf("anytls 密码为空")
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		return nil, fmt.Errorf("端口无效")
+	}
+	q := u.Query()
+	name, _ := url.QueryUnescape(u.Fragment)
+	tag := SanitizeTag(firstNonEmpty(strings.TrimSpace(name), u.Hostname()))
+	return &AnyTLSBackend{
+		Key:                      tag,
+		Name:                     firstNonEmpty(strings.TrimSpace(name), tag),
+		Server:                   u.Hostname(),
+		Port:                     port,
+		Password:                 password,
+		SNI:                      firstNonEmpty(q.Get("sni"), q.Get("peer"), q.Get("server_name"), q.Get("servername")),
+		Insecure:                 parseBool(firstNonEmpty(q.Get("allowInsecure"), q.Get("insecure"), q.Get("skip-cert-verify"))),
+		IdleSessionCheckInterval: firstNonEmpty(q.Get("idle_session_check_interval"), q.Get("idle-session-check-interval")),
+		IdleSessionTimeout:       firstNonEmpty(q.Get("idle_session_timeout"), q.Get("idle-session-timeout")),
+		MinIdleSession:           parseIntDefault(firstNonEmpty(q.Get("min_idle_session"), q.Get("min-idle-session")), 0),
+	}, nil
+}
+
 // decodeSSUserInfo 解码 SIP002 userinfo 中的 method:password。
 func decodeSSUserInfo(value string) (string, string, error) {
 	decoded, err := decodeBase64String(value)
@@ -6477,8 +6745,10 @@ func backendProtocolRank(node ProxyBackend) int {
 		return 1
 	case "trojan":
 		return 2
-	case "ss":
+	case "anytls":
 		return 3
+	case "ss":
+		return 4
 	default:
 		return 9
 	}
@@ -6557,6 +6827,9 @@ func SubscriptionCacheFromBackends(backends []ProxyBackend) []SubscriptionCacheN
 		case *TrojanBackend:
 			copyNode := *node
 			nodes = append(nodes, SubscriptionCacheNode{Protocol: "trojan", Trojan: &copyNode})
+		case *AnyTLSBackend:
+			copyNode := *node
+			nodes = append(nodes, SubscriptionCacheNode{Protocol: "anytls", AnyTLS: &copyNode})
 		}
 	}
 	return nodes
@@ -6584,6 +6857,10 @@ func BackendsFromSubscriptionCache(data []byte) ([]ProxyBackend, error) {
 			case "trojan":
 				if envelope.Trojan != nil {
 					nodes = append(nodes, envelope.Trojan)
+				}
+			case "anytls":
+				if envelope.AnyTLS != nil {
+					nodes = append(nodes, envelope.AnyTLS)
 				}
 			}
 		}
@@ -7030,6 +7307,19 @@ func leadingSpaces(line string) int {
 func parseBool(value string) bool {
 	value = strings.ToLower(strings.TrimSpace(value))
 	return value == "true" || value == "1" || value == "yes" || value == "on"
+}
+
+// parseIntDefault 解析整数，空值或非法值返回默认值。
+func parseIntDefault(value string, fallback int) int {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	result, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return result
 }
 
 // padBase64 为 base64 字符串补齐填充。

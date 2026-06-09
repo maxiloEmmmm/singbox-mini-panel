@@ -50,8 +50,10 @@ ICMP 会直连，ping 只用于判断连通性，不代表 TCP/HTTPS 代理路�
 - VMess
 - Shadowsocks
 - Trojan
+- AnyTLS
 
 Trojan 支持静态节点和订阅 URI。静态节点可配置 TLS、SNI、跳过证书校验，以及 WebSocket transport 的 path 和 Host。
+AnyTLS 支持静态节点和订阅 URI。静态节点可配置 SNI、跳过证书校验，以及空闲会话检查参数。
 
 订阅默认 UA 是 `sing-box/1.13.12`。订阅更新失败不会覆盖旧缓存；启动时没有新缓存会尝试补齐，普通更新失败会保留已有可用状态。
 
