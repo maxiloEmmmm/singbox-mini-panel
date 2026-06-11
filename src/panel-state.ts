@@ -45,7 +45,9 @@ export function serializeStaticNodes(nodes: BackendNode[]) {
     name: node.name,
     server: node.server,
     port: node.port,
+    username: node.username || '',
     password: node.password || '',
+    detour: node.detour || '',
     sni: node.sni || '',
     insecure: node.insecure === true,
     obfs_password: node.obfs_password || '',
@@ -104,6 +106,12 @@ export function normalizeStaticProtocol(protocol: string) {
   if (protocol === 'anytls') {
     return 'anytls'
   }
+  if (protocol === 'socks' || protocol === 'socks5') {
+    return 'socks'
+  }
+  if (protocol === 'http') {
+    return 'http'
+  }
   return 'hy2'
 }
 
@@ -159,7 +167,9 @@ export function emptyStaticForm(): StaticForm {
     name: '',
     server: '',
     port: 443,
+    username: '',
     password: '',
+    detour: '',
     sni: '',
     insecure: false,
     obfs_password: '',
@@ -208,7 +218,9 @@ export function staticFormFromNode(node: BackendNode): StaticForm {
     name: node.name,
     server: node.server,
     port: node.port,
+    username: node.username || '',
     password: node.password || '',
+    detour: node.detour || '',
     sni: node.sni || '',
     insecure: node.insecure === true,
     obfs_password: node.obfs_password || '',

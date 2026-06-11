@@ -97,8 +97,10 @@ const activeNodeTab = ref('static')
 const nowTick = ref(Date.now())
 const activeMemberSourceKey = ref('static')
 const activeOutboundSourceKey = ref('static')
+const activeDetourSourceKey = ref('static')
 const memberModalOpen = ref(false)
 const outboundModalOpen = ref(false)
+const staticDetourModalOpen = ref(false)
 const saving = ref(false)
 const setupSaving = ref(false)
 const probing = ref(true)
@@ -222,6 +224,25 @@ const memberSourceGroups = computed<MemberSourceGroup[]>(() => {
 const memberOptions = computed<MemberOption[]>(() => {
   return memberSourceGroups.value.flatMap((group) => group.nodes)
 })
+const detourSourceGroups = computed<MemberSourceGroup[]>(() => {
+  const groups = memberSourceGroups.value.map((group) => ({
+    ...group,
+    nodes: arrayOrEmpty(group.nodes).filter((node) => node.ref !== `static.${sanitizeLocalKey(staticForm.value.key)}`),
+  }))
+  if (dynamicGroups.value.length > 0) {
+    groups.push({
+      key: 'dynamic',
+      name: '动态',
+      nodes: dynamicGroups.value.map((group) => ({
+        ref: `group.${group.key}`,
+        label: group.name || group.key,
+        protocol: 'group',
+        subtitle: `${arrayOrEmpty(group.members).length} 个成员`,
+      })),
+    })
+  }
+  return groups
+})
 const outboundSourceGroups = computed<MemberSourceGroup[]>(() => {
   const groups: MemberSourceGroup[] = [
     {
@@ -320,6 +341,9 @@ function applyPanelState(nextPanel: PanelState) {
   if (!memberSourceGroups.value.some((group) => group.key === activeMemberSourceKey.value)) {
     activeMemberSourceKey.value = memberSourceGroups.value[0]?.key || 'static'
   }
+  if (!detourSourceGroups.value.some((group) => group.key === activeDetourSourceKey.value)) {
+    activeDetourSourceKey.value = detourSourceGroups.value[0]?.key || 'static'
+  }
   dynamicOutbound.value = cloneDynamicOutbound(nextPanel.dynamic_outbound)
   if (selectedDynamicOutboundIndex.value >= dynamicOutbound.value.length) {
     selectedDynamicOutboundIndex.value = Math.max(dynamicOutbound.value.length - 1, 0)
@@ -361,7 +385,7 @@ function applyPanelState(nextPanel: PanelState) {
 function updateStaticProtocol(protocol: string) {
   const nextProtocol = normalizeStaticProtocol(protocol)
   staticForm.value.protocol = nextProtocol
-  if (nextProtocol === 'trojan' || nextProtocol === 'anytls') {
+  if (nextProtocol === 'trojan' || nextProtocol === 'anytls' || nextProtocol === 'socks' || nextProtocol === 'http') {
     staticForm.value.port = Number(staticForm.value.port) || 443
   }
   if (nextProtocol === 'trojan') {
@@ -369,10 +393,44 @@ function updateStaticProtocol(protocol: string) {
   }
 }
 
+// 适用场景：查找静态节点 detour 引用对应的候选项。
+function findDetourOption(refKey: string) {
+  for (const source of detourSourceGroups.value) {
+    const option = arrayOrEmpty(source.nodes).find((item) => item.ref === refKey)
+    if (option) {
+      return { source, option }
+    }
+  }
+  return null
+}
+
+// 适用场景：展示静态节点 detour 目标名称。
+function detourLabel(refKey: string) {
+  if (!refKey) {
+    return '不使用'
+  }
+  const found = findDetourOption(refKey)
+  if (!found) {
+    return refKey
+  }
+  return `${found.source.name} / ${found.option.label}`
+}
+
+// 适用场景：选择静态节点链式拨号前置出口。
+function selectStaticDetour(refKey: string) {
+  staticForm.value.detour = refKey
+}
+
+// 适用场景：清空静态节点链式拨号前置出口。
+function clearStaticDetour() {
+  staticForm.value.detour = ''
+}
+
 // 适用场景：打开新增静态节点弹窗。
 function addStaticNode() {
   staticEditingKey.value = ''
   staticForm.value = emptyStaticForm()
+  activeDetourSourceKey.value = detourSourceGroups.value[0]?.key || 'static'
   staticModalOpen.value = true
 }
 
@@ -380,6 +438,7 @@ function addStaticNode() {
 function editStaticNode(node: BackendNode) {
   staticEditingKey.value = node.key
   staticForm.value = staticFormFromNode(node)
+  activeDetourSourceKey.value = detourSourceGroups.value[0]?.key || 'static'
   staticModalOpen.value = true
 }
 
@@ -416,6 +475,11 @@ function saveStaticDraft() {
     pageError.value = 'SS 静态节点 password 必填'
     return
   }
+  const detour = item.detour.trim()
+  if (detour === `static.${key}`) {
+    pageError.value = '静态节点不能 detour 到自己'
+    return
+  }
   const next: BackendNode = {
     key,
     tag: `static-${key}`,
@@ -424,7 +488,9 @@ function saveStaticDraft() {
     server: item.server.trim(),
     port: Number(item.port) || 443,
     source: 'static',
-    password: protocol === 'hy2' || protocol === 'ss' || protocol === 'trojan' || protocol === 'anytls' ? item.password.trim() : '',
+    username: protocol === 'socks' || protocol === 'http' ? item.username.trim() : '',
+    password: protocol === 'hy2' || protocol === 'ss' || protocol === 'trojan' || protocol === 'anytls' || protocol === 'socks' || protocol === 'http' ? item.password.trim() : '',
+    detour,
     sni: item.sni.trim(),
     insecure: item.insecure,
     obfs_password: protocol === 'hy2' ? item.obfs_password.trim() : '',
@@ -615,6 +681,10 @@ function replaceBackendReferences(oldTag: string, newTag: string, oldRef: string
     primary: group.primary === oldRef ? newRef : group.primary,
     members: arrayOrEmpty(group.members).map((member) => (member === oldRef ? newRef : member)),
   }))
+  staticNodes.value = staticNodes.value.map((node) => ({
+    ...node,
+    detour: node.detour === oldRef ? newRef : node.detour,
+  }))
   dynamicOutbound.value = dynamicOutbound.value.map((rule) => ({
     ...rule,
     outbound: rule.outbound === oldTag ? newTag : rule.outbound,
@@ -672,6 +742,11 @@ function localBackendBlockers(tags: string | string[], refs: string | string[]) 
       blockers.push(`动态出口 ${rule.match}`)
     }
   }
+  for (const node of staticNodes.value) {
+    if (refSet.has(node.detour || '')) {
+      blockers.push(`静态节点 ${node.key} detour`)
+    }
+  }
   return blockers
 }
 
@@ -705,6 +780,11 @@ function addDynamicGroup() {
 function removeEditingDynamicGroup() {
   const group = editingDynamicGroup.value
   if (!group) {
+    return
+  }
+  const blockers = localBackendBlockers(group.tag, `group.${group.key}`)
+  if (blockers.length > 0) {
+    pageError.value = `不能删除，仍被引用: ${blockers.join('；')}`
     return
   }
   dynamicGroups.value = dynamicGroups.value.filter((item) => item.key !== group.key)
@@ -787,6 +867,7 @@ function updateSelectedDynamicGroupKey(value: string) {
   if (!group) {
     return
   }
+  const oldKey = group.key
   const oldTag = group.tag
   const nextKey = value.trim()
   group.key = nextKey
@@ -795,6 +876,10 @@ function updateSelectedDynamicGroupKey(value: string) {
   if (selectedTag.value === oldTag) {
     selectedTag.value = group.tag
   }
+  staticNodes.value = staticNodes.value.map((node) => ({
+    ...node,
+    detour: node.detour === `group.${oldKey}` ? `group.${nextKey}` : node.detour,
+  }))
   dynamicOutbound.value = dynamicOutbound.value.map((rule) => ({
     ...rule,
     outbound: rule.outbound === oldTag ? group.tag : rule.outbound,
@@ -1395,6 +1480,12 @@ function protocolColor(node: BackendNode) {
   if (node.protocol === 'ss') {
     return 'green'
   }
+  if (node.protocol === 'socks') {
+    return 'lime'
+  }
+  if (node.protocol === 'http') {
+    return 'blue'
+  }
   return 'purple'
 }
 
@@ -1473,6 +1564,8 @@ async function saveAll(confirmOverwrite: boolean | Event = false) {
           server: node.server,
           port: Number(node.port),
           password: node.password || '',
+          username: node.username || '',
+          detour: node.detour || '',
           sni: node.sni || '',
           insecure: node.insecure === true,
           obfs_password: node.obfs_password || '',
@@ -2381,6 +2474,8 @@ onUnmounted(() => {
                   <a-select-option value="ss">SS</a-select-option>
                   <a-select-option value="trojan">Trojan</a-select-option>
                   <a-select-option value="anytls">AnyTLS</a-select-option>
+                  <a-select-option value="socks">SOCKS5</a-select-option>
+                  <a-select-option value="http">HTTP</a-select-option>
                 </a-select>
               </label>
               <label class="field-row">
@@ -2399,6 +2494,14 @@ onUnmounted(() => {
                 <span>port</span>
                 <a-input v-model:value="staticForm.port" type="number" />
               </label>
+              <div class="field-row">
+                <span>detour</span>
+                <div class="outbound-target-row">
+                  <span>{{ detourLabel(staticForm.detour) }}</span>
+                  <a-button size="small" @click="staticDetourModalOpen = true">选择</a-button>
+                  <a-button size="small" @click="clearStaticDetour">清空</a-button>
+                </div>
+              </div>
               <label
                 v-if="staticForm.protocol === 'hy2' || staticForm.protocol === 'trojan' || staticForm.protocol === 'anytls'"
                 class="field-row"
@@ -2406,7 +2509,17 @@ onUnmounted(() => {
                 <span>password</span>
                 <a-input v-model:value="staticForm.password" />
               </label>
-              <label v-if="staticForm.protocol !== 'ss'" class="field-row">
+              <template v-if="staticForm.protocol === 'socks' || staticForm.protocol === 'http'">
+                <label class="field-row">
+                  <span>username</span>
+                  <a-input v-model:value="staticForm.username" />
+                </label>
+                <label class="field-row">
+                  <span>password</span>
+                  <a-input v-model:value="staticForm.password" />
+                </label>
+              </template>
+              <label v-if="staticForm.protocol !== 'ss' && staticForm.protocol !== 'socks' && staticForm.protocol !== 'http'" class="field-row">
                 <span>sni</span>
                 <a-input v-model:value="staticForm.sni" />
               </label>
@@ -2481,11 +2594,47 @@ onUnmounted(() => {
                   <a-input v-model:value="staticForm.plugin_opts" placeholder="obfs=http;obfs-host=example.com" />
                 </label>
               </template>
-              <label v-if="staticForm.protocol !== 'ss'" class="field-row inline-field">
+              <label v-if="staticForm.protocol !== 'ss' && staticForm.protocol !== 'socks' && staticForm.protocol !== 'http'" class="field-row inline-field">
                 <span>insecure</span>
                 <a-switch v-model:checked="staticForm.insecure" size="small" />
               </label>
             </div>
+            <a-modal
+              v-model:open="staticDetourModalOpen"
+              title="选择 detour"
+              :footer="null"
+              width="720px"
+            >
+              <a-tabs
+                v-model:activeKey="activeDetourSourceKey"
+                class="member-source-tabs member-modal-tabs"
+                tab-position="left"
+                size="small"
+              >
+                <a-tab-pane
+                  v-for="source in detourSourceGroups"
+                  :key="source.key"
+                  :tab="`${source.name} (${arrayOrEmpty(source.nodes).length})`"
+                >
+                  <div class="member-list">
+                    <button
+                      v-for="option in arrayOrEmpty(source.nodes)"
+                      :key="option.ref"
+                      class="outbound-option"
+                      :class="{ active: option.ref === staticForm.detour }"
+                      type="button"
+                      @click="selectStaticDetour(option.ref); staticDetourModalOpen = false"
+                    >
+                      <span>
+                        <strong>{{ option.label }}</strong>
+                        <small>{{ option.protocol.toUpperCase() }} {{ option.subtitle }}</small>
+                      </span>
+                    </button>
+                    <div v-if="arrayOrEmpty(source.nodes).length === 0" class="empty-line">无可选 detour</div>
+                  </div>
+                </a-tab-pane>
+              </a-tabs>
+            </a-modal>
           </a-modal>
           <a-modal
             v-model:open="subscriptionModalOpen"
