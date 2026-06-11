@@ -405,6 +405,24 @@ input {
   width: 96px;
 }
 
+.probe-count-input.ant-input-number {
+  width: 96px;
+}
+
+.probe-count-input .ant-input-number-input {
+  color: #111827;
+  text-align: center;
+}
+
+.probe-target-row {
+  display: grid;
+  margin-top: 8px;
+}
+
+.probe-modal-target-row {
+  margin-top: 0;
+}
+
 .probe-popover-results {
   display: grid;
   gap: 4px;
@@ -1022,6 +1040,31 @@ input {
   color: #475467;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.import-content-field {
+  align-items: start;
+}
+
+.import-file-field {
+  align-items: center;
+}
+
+.import-file-field small {
+  overflow: hidden;
+  color: #667085;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.import-file-input {
+  min-width: 0;
+  color: #344054;
+}
+
+.import-textarea {
+  min-height: 280px !important;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 @media (max-width: 860px) {
