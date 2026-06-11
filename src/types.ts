@@ -16,6 +16,8 @@ export interface BackendNode {
   source: string
   /** HY2/SS/Trojan/AnyTLS 静态节点认证密码。 */
   password?: string
+  /** SOCKS5/HTTP 静态节点认证用户名。 */
+  username?: string
   /** TLS 类静态节点 SNI。 */
   sni?: string
   /** TLS 类静态节点是否跳过证书校验。 */
@@ -48,6 +50,8 @@ export interface BackendNode {
   idle_session_timeout?: string
   /** AnyTLS 至少保留的空闲会话数量。 */
   min_idle_session?: number
+  /** 静态节点链式拨号前置出口引用。 */
+  detour?: string
 }
 
 /** 订阅分组适用于左侧纵向列表。 */
@@ -322,6 +326,10 @@ export interface StaticForm {
   port: number
   /** 协议密码。 */
   password: string
+  /** SOCKS5/HTTP 用户名。 */
+  username: string
+  /** 链式拨号前置出口引用。 */
+  detour: string
   /** TLS SNI。 */
   sni: string
   /** 是否跳过 TLS 校验。 */
