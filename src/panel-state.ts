@@ -5,6 +5,7 @@ import type {
   ImportedNodeGroup,
   ImportForm,
   InboundSettings,
+  OverrideRule,
   PanelState,
   StaticForm,
   SubscriptionForm,
@@ -159,6 +160,27 @@ export function serializeDynamicOutbound(rules: DynamicOutboundRule[]) {
   })))
 }
 
+/** cloneOverrides 复制静态跳转规则，避免编辑污染保存基线。 */
+export function cloneOverrides(rules: OverrideRule[] | null | undefined) {
+  return arrayOrEmpty(rules).map((rule) => ({
+    ...rule,
+    outbound: rule.outbound || 'direct',
+    enabled: rule.enabled !== false,
+  }))
+}
+
+/** serializeOverrides 稳定比较静态跳转规则是否变更。 */
+export function serializeOverrides(rules: OverrideRule[]) {
+  return JSON.stringify(rules.map((rule) => ({
+    key: rule.key,
+    match: rule.match,
+    address: rule.address,
+    port: Number(rule.port) || 0,
+    outbound: rule.outbound || 'direct',
+    enabled: rule.enabled !== false,
+  })))
+}
+
 /** emptyStaticForm 生成空静态节点表单。 */
 export function emptyStaticForm(): StaticForm {
   return {
@@ -261,6 +283,7 @@ export function normalizedPanelState(nextPanel: PanelState) {
     dynamic_groups: cloneDynamicGroups(nextPanel.dynamic_groups),
     geofiles: arrayOrEmpty(nextPanel.geofiles).map((file) => ({ ...file })),
     inbound: normalizeInboundSettings(nextPanel.inbound),
+    overrides: cloneOverrides(nextPanel.overrides),
     dynamic_outbound: cloneDynamicOutbound(nextPanel.dynamic_outbound),
     warnings: [...arrayOrEmpty(nextPanel.warnings)],
   }

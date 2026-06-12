@@ -350,6 +350,38 @@ func TestBuildSingBoxConfigSkipsHostsDNSWhenDisabled(t *testing.T) {
 	}
 }
 
+// TestBuildSingBoxConfigIncludesOverrideRule 验证静态跳转规则会生成目标改写路由。
+func TestBuildSingBoxConfigIncludesOverrideRule(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Policy.Overrides = []OverrideRule{{
+		Key:      "example-local",
+		Match:    "domain:example.com",
+		Address:  "127.0.0.1",
+		Port:     10820,
+		Outbound: "direct",
+		Enabled:  boolPtr(true),
+	}}
+	app := &App{}
+	doc, err := app.BuildSingBoxConfig(cfg, []ProxyBackend{
+		&HY2Backend{Tag: "hy2-a", Server: "example.com", Port: 443, Password: "p"},
+	}, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := doc["route"].(map[string]any)
+	rule := findMapByString(route["rules"].([]map[string]any), "override_address", "127.0.0.1")
+	if rule == nil {
+		t.Fatal("未生成静态跳转规则")
+	}
+	if rule["override_port"] != 10820 || rule["outbound"] != "direct" {
+		t.Fatalf("静态跳转目标错误: %+v", rule)
+	}
+	domains := rule["domain"].([]string)
+	if len(domains) != 1 || domains[0] != "example.com" {
+		t.Fatalf("静态跳转域名错误: %+v", rule)
+	}
+}
+
 // TestBuildTrojanOutbound 验证 Trojan 节点生成 sing-box 出站配置。
 func TestBuildTrojanOutbound(t *testing.T) {
 	out := BuildTrojanOutbound(TrojanBackend{

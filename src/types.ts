@@ -134,6 +134,22 @@ export interface DynamicOutboundRule {
   outbound: string
 }
 
+/** 静态跳转规则适用于把命中目标改写到固定地址端口。 */
+export interface OverrideRule {
+  /** 规则唯一 key。 */
+  key: string
+  /** 匹配条件，支持 domain:xx.com 或 IP/CIDR。 */
+  match: string
+  /** 改写后的目标地址。 */
+  address: string
+  /** 改写后的目标端口。 */
+  port: number
+  /** 改写后使用的出站，目前固定 direct。 */
+  outbound: string
+  /** 是否启用。 */
+  enabled: boolean
+}
+
 /** 路由检查结果适用于输入目标后的解释展示。 */
 export interface RouteCheckResult {
   /** 用户原始输入。 */
@@ -304,6 +320,8 @@ export interface PanelState {
   force_proxy: string
   /** 强制直连规则文本。 */
   force_direct: string
+  /** 静态跳转规则。 */
+  overrides: OverrideRule[]
   /** 动态出口规则。 */
   dynamic_outbound: DynamicOutboundRule[]
   /** 当前保存配置生成的 sing-box JSON。 */
