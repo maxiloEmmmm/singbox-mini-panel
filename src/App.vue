@@ -8,6 +8,7 @@ import {
   cloneDynamicGroups,
   cloneDynamicOutbound,
   cloneImportedGroups,
+  cloneOverrides,
   cloneStaticNodes,
   cloneSubscriptions,
   emptyImportForm,
@@ -21,6 +22,7 @@ import {
   serializeDynamicGroups,
   serializeDynamicOutbound,
   serializeImportedGroups,
+  serializeOverrides,
   serializeStaticNodes,
   serializeSubscriptions,
   sortedRuleSets,
@@ -40,6 +42,7 @@ import type {
   LoginResponse,
   MemberOption,
   MemberSourceGroup,
+  OverrideRule,
   PanelState,
   ProbeResponse,
   RouteCheckResult,
@@ -70,6 +73,9 @@ const editingOriginalDynamicGroupKey = ref('')
 const dynamicOutbound = ref<DynamicOutboundRule[]>([])
 const savedDynamicOutbound = ref<DynamicOutboundRule[]>([])
 const selectedDynamicOutboundIndex = ref(0)
+const overrides = ref<OverrideRule[]>([])
+const savedOverrides = ref<OverrideRule[]>([])
+const selectedOverrideIndex = ref(0)
 const forceProxy = ref('')
 const forceDirect = ref('')
 const inboundMode = ref('tun')
@@ -157,6 +163,9 @@ const editingDynamicGroup = computed(
 )
 const selectedDynamicOutboundRule = computed(
   () => dynamicOutbound.value[selectedDynamicOutboundIndex.value] || null,
+)
+const selectedOverrideRule = computed(
+  () => overrides.value[selectedOverrideIndex.value] || null,
 )
 const activeOutboundText = computed(() => outboundDisplayLabel(selectedTag.value))
 const configWarnings = computed(() => panel.value?.warnings || [])
@@ -301,6 +310,7 @@ const hasChanges = computed(() => {
     serializeSubscriptions(subscriptions.value) !== serializeSubscriptions(savedSubscriptions.value) ||
     serializeImportedGroups(importedGroups.value) !== serializeImportedGroups(savedImportedGroups.value) ||
     serializeDynamicGroups(dynamicGroups.value) !== serializeDynamicGroups(savedDynamicGroups.value) ||
+    serializeOverrides(overrides.value) !== serializeOverrides(savedOverrides.value) ||
     serializeDynamicOutbound(dynamicOutbound.value) !== serializeDynamicOutbound(savedDynamicOutbound.value) ||
     forceProxy.value !== savedForceProxy.value ||
     forceDirect.value !== savedForceDirect.value ||
@@ -348,6 +358,10 @@ function applyPanelState(nextPanel: PanelState) {
   if (selectedDynamicOutboundIndex.value >= dynamicOutbound.value.length) {
     selectedDynamicOutboundIndex.value = Math.max(dynamicOutbound.value.length - 1, 0)
   }
+  overrides.value = cloneOverrides(nextPanel.overrides)
+  if (selectedOverrideIndex.value >= overrides.value.length) {
+    selectedOverrideIndex.value = Math.max(overrides.value.length - 1, 0)
+  }
   activeNodeTab.value = tabKeyForOutbound(selectedTag.value)
   if (!outboundSourceGroups.value.some((group) => group.key === activeOutboundSourceKey.value)) {
     activeOutboundSourceKey.value = outboundSourceGroups.value[0]?.key || 'static'
@@ -369,6 +383,7 @@ function applyPanelState(nextPanel: PanelState) {
   savedSubscriptions.value = cloneSubscriptions(subscriptions.value)
   savedImportedGroups.value = cloneImportedGroups(importedGroups.value)
   savedDynamicGroups.value = cloneDynamicGroups(dynamicGroups.value)
+  savedOverrides.value = cloneOverrides(overrides.value)
   savedDynamicOutbound.value = cloneDynamicOutbound(dynamicOutbound.value)
   savedForceProxy.value = forceProxy.value
   savedForceDirect.value = forceDirect.value
@@ -1064,6 +1079,93 @@ function outboundLabel(tag: string) {
   return tag || '未选择'
 }
 
+// 适用场景：新增一条静态跳转规则。
+function addOverrideRule() {
+  const nextIndex = overrides.value.length + 1
+  overrides.value = [
+    ...overrides.value,
+    {
+      key: `override-${nextIndex}`,
+      match: '',
+      address: '127.0.0.1',
+      port: 0,
+      outbound: 'direct',
+      enabled: true,
+    },
+  ]
+  selectedOverrideIndex.value = overrides.value.length - 1
+}
+
+// 适用场景：选择正在编辑的静态跳转规则。
+function selectOverrideRule(index: number) {
+  selectedOverrideIndex.value = index
+}
+
+// 适用场景：删除当前静态跳转规则。
+function removeSelectedOverrideRule() {
+  if (!selectedOverrideRule.value) {
+    return
+  }
+  overrides.value = overrides.value.filter((_, index) => index !== selectedOverrideIndex.value)
+  selectedOverrideIndex.value = Math.max(Math.min(selectedOverrideIndex.value, overrides.value.length - 1), 0)
+}
+
+// 适用场景：更新当前静态跳转 key。
+function updateSelectedOverrideKey(value: string) {
+  const rule = selectedOverrideRule.value
+  if (!rule) {
+    return
+  }
+  rule.key = sanitizeLocalKey(value)
+}
+
+// 适用场景：更新当前静态跳转匹配条件。
+function updateSelectedOverrideMatch(value: string) {
+  const rule = selectedOverrideRule.value
+  if (!rule) {
+    return
+  }
+  rule.match = value
+}
+
+// 适用场景：更新当前静态跳转目标地址。
+function updateSelectedOverrideAddress(value: string) {
+  const rule = selectedOverrideRule.value
+  if (!rule) {
+    return
+  }
+  rule.address = value
+}
+
+// 适用场景：更新当前静态跳转目标端口。
+function updateSelectedOverridePort(value: number | string | null) {
+	const rule = selectedOverrideRule.value
+	if (!rule) {
+		return
+	}
+	rule.port = Number(value) || 0
+}
+
+// 适用场景：展示静态跳转规则的目标地址摘要。
+function overrideTargetText(rule: OverrideRule) {
+	if (!rule.address && !rule.port) {
+		return '目标未填'
+	}
+	if (!rule.port) {
+		return `${rule.address || '地址未填'}:端口未填`
+	}
+	return `${rule.address || '地址未填'}:${rule.port}`
+}
+
+// 适用场景：切换当前静态跳转启用状态。
+function updateSelectedOverrideEnabled(checked: boolean) {
+	const rule = selectedOverrideRule.value
+  if (!rule) {
+    return
+  }
+  rule.enabled = checked
+}
+
 // 适用场景：判断 geofile 当前是否启用。
 function isGeoFileEnabled(file: GeoFileItem) {
   if (file.role === 'ads-block') {
@@ -1607,6 +1709,14 @@ async function saveAll(confirmOverwrite: boolean | Event = false) {
           mixed_port: Number(mixedPort.value),
         },
         dynamic_outbound: dynamicOutbound.value,
+        overrides: overrides.value.map((rule) => ({
+          key: rule.key,
+          match: rule.match,
+          address: rule.address,
+          port: Number(rule.port) || 0,
+          outbound: rule.outbound || 'direct',
+          enabled: rule.enabled !== false,
+        })),
         force_proxy: forceProxy.value,
         force_direct: forceDirect.value,
         ads_block: adsBlock.value,
@@ -2776,6 +2886,69 @@ onUnmounted(() => {
                 class="rule-textarea"
                 spellcheck="false"
               />
+            </div>
+          </a-tab-pane>
+
+          <a-tab-pane key="overrides" :tab="`静态跳转 (${overrides.length})`">
+            <div class="rule-pane dynamic-outbound-pane">
+              <div class="tab-toolbar">
+                <span>命中目标后改写到固定地址端口</span>
+                <a-button size="small" @click="addOverrideRule">添加</a-button>
+              </div>
+              <div class="dynamic-outbound-layout">
+                <div class="dynamic-rule-list">
+                  <button
+                    v-for="(rule, index) in overrides"
+                    :key="`${rule.key}-${index}`"
+                    class="dynamic-rule-item"
+                    :class="{ active: index === selectedOverrideIndex }"
+                    type="button"
+										@click="selectOverrideRule(index)"
+									>
+										<strong>{{ rule.match || '未填写匹配' }}</strong>
+										<small>{{ rule.enabled === false ? '已停用' : overrideTargetText(rule) }}</small>
+									</button>
+									<div v-if="overrides.length === 0" class="empty-line">无静态跳转规则</div>
+								</div>
+
+                <section v-if="selectedOverrideRule" class="dynamic-outbound-editor">
+                  <div class="pane-title">
+                    <strong>跳转配置</strong>
+                    <div class="pane-actions">
+                      <a-switch
+                        :checked="selectedOverrideRule.enabled !== false"
+                        checked-children="已启用"
+                        un-checked-children="已停用"
+                        @change="(checked: boolean) => updateSelectedOverrideEnabled(checked)"
+                      />
+                      <a-button size="small" danger @click="removeSelectedOverrideRule">删除</a-button>
+                    </div>
+                  </div>
+                  <a-input
+                    :value="selectedOverrideRule.key"
+                    placeholder="规则 key，例如 example-local"
+                    @change="(event: Event) => updateSelectedOverrideKey((event.target as HTMLInputElement).value)"
+                  />
+                  <a-input
+									:value="selectedOverrideRule.match"
+									placeholder="domain:example.com"
+									@change="(event: Event) => updateSelectedOverrideMatch((event.target as HTMLInputElement).value)"
+								/>
+								<div class="override-target-row">
+									<a-input
+										:value="selectedOverrideRule.address"
+										placeholder="127.0.0.1"
+										@change="(event: Event) => updateSelectedOverrideAddress((event.target as HTMLInputElement).value)"
+									/>
+									<a-input
+										class="override-port-input"
+										:value="selectedOverrideRule.port || ''"
+										placeholder="端口"
+										@change="(event: Event) => updateSelectedOverridePort((event.target as HTMLInputElement).value)"
+									/>
+								</div>
+							</section>
+              </div>
             </div>
           </a-tab-pane>
 

@@ -374,8 +374,26 @@ type PolicyConfig struct {
 	Default string `yaml:"default"`
 	// Fallback 是预留的故障切换顺序，当前用于选择器生成。
 	Fallback []string `yaml:"fallback"`
+	// Overrides 保存目的地址静态跳转规则。
+	Overrides []OverrideRule `yaml:"overrides"`
 	// DynamicOutbound 保存目的匹配到指定出口的规则。
 	DynamicOutbound []DynamicOutboundRule `yaml:"dynamic_outbound"`
+}
+
+// OverrideRule 表示命中目标后改写连接目标的静态跳转规则。
+type OverrideRule struct {
+	// Key 是规则唯一机器标识，适用于 Web 编辑和去重。
+	Key string `yaml:"key" json:"key"`
+	// Match 是匹配条件，支持 domain:xx.com 或 IP/CIDR。
+	Match string `yaml:"match" json:"match"`
+	// Address 是连接被改写后的目标地址。
+	Address string `yaml:"address" json:"address"`
+	// Port 是连接被改写后的目标端口。
+	Port int `yaml:"port" json:"port"`
+	// Outbound 是改写后使用的出站，空值时使用 direct。
+	Outbound string `yaml:"outbound" json:"outbound"`
+	// Enabled 控制该跳转规则是否参与渲染。
+	Enabled *bool `yaml:"enabled" json:"enabled"`
 }
 
 // DynamicOutboundRule 表示目的地址固定走指定 backend 的规则。
@@ -1613,6 +1631,8 @@ type WebStateResponse struct {
 	ForceProxy string `json:"force_proxy"`
 	// ForceDirect 是强制直连规则文件内容。
 	ForceDirect string `json:"force_direct"`
+	// Overrides 保存目的地址静态跳转规则。
+	Overrides []OverrideRule `json:"overrides"`
 	// DynamicOutbound 保存目的匹配到指定出口的规则。
 	DynamicOutbound []DynamicOutboundRule `json:"dynamic_outbound"`
 	// SingBoxConfig 是当前保存配置生成的 sing-box JSON。
@@ -1795,6 +1815,8 @@ type WebSaveRequest struct {
 	ForceProxy string `json:"force_proxy"`
 	// ForceDirect 是强制直连规则文件内容。
 	ForceDirect string `json:"force_direct"`
+	// Overrides 保存目的地址静态跳转规则。
+	Overrides []OverrideRule `json:"overrides"`
 	// DynamicOutbound 保存目的匹配到指定出口的规则。
 	DynamicOutbound []DynamicOutboundRule `json:"dynamic_outbound"`
 	// AdsBlock 控制广告规则是否启用。
@@ -4053,6 +4075,8 @@ func (a *App) BuildWebState() (WebStateResponse, error) {
 		Inbound:       WebInboundFromConfig(cfg),
 		ForceProxy:    string(forceProxy),
 		ForceDirect:   string(forceDirect),
+		Overrides: append(make([]OverrideRule, 0, len(cfg.Policy.Overrides)),
+			cfg.Policy.Overrides...),
 		DynamicOutbound: append(make([]DynamicOutboundRule, 0, len(cfg.Policy.DynamicOutbound)),
 			cfg.Policy.DynamicOutbound...),
 		SingBoxConfig: singBoxConfig,
@@ -4297,6 +4321,10 @@ func (a *App) SaveWebState(req WebSaveRequest) error {
 	if err := a.ValidateStaticDetours(cfg); err != nil {
 		return err
 	}
+	overrides, err := NormalizeOverrideRules(req.Overrides)
+	if err != nil {
+		return err
+	}
 	dynamicRules, err := a.NormalizeDynamicOutboundRules(cfg, req.DynamicOutbound)
 	if err != nil {
 		return err
@@ -4305,6 +4333,7 @@ func (a *App) SaveWebState(req WebSaveRequest) error {
 		return fmt.Errorf("outbound 不存在: %s", req.ActiveOutbound)
 	}
 	cfg.Policy.Default = req.ActiveOutbound
+	cfg.Policy.Overrides = overrides
 	cfg.Policy.DynamicOutbound = dynamicRules
 	if blockers := a.RemovedBackendBlockers(oldCfg, cfg); len(blockers) > 0 {
 		return fmt.Errorf("删除被引用的 backend: %s", strings.Join(blockers, "; "))
@@ -4482,6 +4511,9 @@ func (a *App) CheckRouteTarget(input string) (WebRouteCheckResponse, error) {
 	if err != nil {
 		return WebRouteCheckResponse{}, err
 	}
+	if result, ok := checkOverrideTarget(target, cfg.Policy.Overrides); ok {
+		return result, nil
+	}
 	if result, ok := a.checkDynamicOutboundTarget(target, cfg.Policy.DynamicOutbound); ok {
 		return result, nil
 	}
@@ -4554,6 +4586,21 @@ func parseRouteTarget(input string) (parsedRouteTarget, error) {
 		return parsedRouteTarget{}, fmt.Errorf("目标格式错误: %s", raw)
 	}
 	return parsedRouteTarget{Input: raw, Target: domain, Kind: "domain", Domain: domain}, nil
+}
+
+// checkOverrideTarget 判断目标是否命中静态跳转规则。
+func checkOverrideTarget(target parsedRouteTarget, rules []OverrideRule) (WebRouteCheckResponse, bool) {
+	for _, rule := range rules {
+		if !OverrideEnabled(rule) || !routeTargetMatchesRuleTarget(target, rule.Match) {
+			continue
+		}
+		outbound := SanitizeTag(firstNonEmpty(rule.Outbound, "direct"))
+		reason := fmt.Sprintf("命中静态跳转到 %s:%d", rule.Address, rule.Port)
+		result := routeCheckResult(target, "override", outbound, reason, "override:"+rule.Key, false)
+		result.Notes = append(result.Notes, fmt.Sprintf("目标地址改写为 %s:%d", rule.Address, rule.Port))
+		return result, true
+	}
+	return WebRouteCheckResponse{}, false
 }
 
 // checkDynamicOutboundTarget 判断目标是否命中动态出口规则。
@@ -5150,6 +5197,63 @@ func (a *App) NormalizeDynamicOutboundRules(cfg Config, rules []DynamicOutboundR
 		result = append(result, DynamicOutboundRule{Match: match, Outbound: outbound})
 	}
 	return result, nil
+}
+
+// NormalizeOverrideRules 校验并清洗 Web 提交的静态跳转规则。
+func NormalizeOverrideRules(rules []OverrideRule) ([]OverrideRule, error) {
+	result := make([]OverrideRule, 0, len(rules))
+	seenKey := map[string]bool{}
+	seenMatch := map[string]bool{}
+	for index, rule := range rules {
+		key := SanitizeTag(rule.Key)
+		match := strings.TrimSpace(rule.Match)
+		address := strings.TrimSpace(rule.Address)
+		outbound := SanitizeTag(firstNonEmpty(rule.Outbound, "direct"))
+		empty := key == "" && match == "" && address == "" && rule.Port == 0
+		if empty {
+			continue
+		}
+		if key == "" {
+			key = fmt.Sprintf("override-%d", index+1)
+		}
+		if match == "" || address == "" || rule.Port <= 0 {
+			return nil, errors.New("静态跳转规则必须填写匹配条件、目标地址和端口")
+		}
+		if seenKey[key] {
+			return nil, fmt.Errorf("静态跳转 key 重复: %s", key)
+		}
+		seenKey[key] = true
+		enabled := OverrideEnabled(rule)
+		if _, err := BuildOverrideRouteRule(OverrideRule{
+			Key:      key,
+			Match:    match,
+			Address:  address,
+			Port:     rule.Port,
+			Outbound: outbound,
+			Enabled:  boolPtr(enabled),
+		}); err != nil {
+			return nil, err
+		}
+		matchKey := strings.ToLower(match)
+		if seenMatch[matchKey] {
+			return nil, fmt.Errorf("静态跳转匹配重复: %s", match)
+		}
+		seenMatch[matchKey] = true
+		result = append(result, OverrideRule{
+			Key:      key,
+			Match:    match,
+			Address:  address,
+			Port:     rule.Port,
+			Outbound: outbound,
+			Enabled:  boolPtr(enabled),
+		})
+	}
+	return result, nil
+}
+
+// OverrideEnabled 返回静态跳转规则是否启用，缺省时按启用处理。
+func OverrideEnabled(rule OverrideRule) bool {
+	return rule.Enabled == nil || *rule.Enabled
 }
 
 // ValidateStaticDetours 校验静态节点链式拨号引用。
@@ -6328,6 +6432,16 @@ func (a *App) BuildSingBoxConfig(cfg Config, backends []ProxyBackend, directRule
 	}
 	routeRules = append(routeRules, map[string]any{"network": "icmp", "action": "route", "outbound": "direct"})
 	routeRules = append(routeRules, BuildTailscaleDirectRouteRules()...)
+	for _, rule := range cfg.Policy.Overrides {
+		if !OverrideEnabled(rule) {
+			continue
+		}
+		routeRule, err := BuildOverrideRouteRule(rule)
+		if err != nil {
+			return nil, err
+		}
+		routeRules = append(routeRules, routeRule)
+	}
 	for _, rule := range dynamicRules {
 		routeRule, err := BuildDynamicOutboundRouteRule(rule)
 		if err != nil {
@@ -6872,26 +6986,70 @@ func BuildDynamicOutboundRouteRule(rule DynamicOutboundRule) (map[string]any, er
 		return nil, errors.New("动态出口规则缺少匹配条件或出口")
 	}
 	m := map[string]any{"action": "route", "outbound": DynamicOutboundSelectorTag(rule)}
+	if err := applyRouteMatch(m, match, "动态出口"); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// BuildOverrideRouteRule 将静态跳转规则转成 sing-box 目标改写路由规则。
+func BuildOverrideRouteRule(rule OverrideRule) (map[string]any, error) {
+	match := strings.TrimSpace(rule.Match)
+	address := strings.TrimSpace(rule.Address)
+	outbound := SanitizeTag(firstNonEmpty(rule.Outbound, "direct"))
+	if match == "" || address == "" || rule.Port <= 0 {
+		return nil, errors.New("静态跳转规则缺少匹配条件、目标地址或端口")
+	}
+	if rule.Port > 65535 {
+		return nil, fmt.Errorf("静态跳转端口超出范围: %d", rule.Port)
+	}
+	if outbound != "direct" {
+		// 触发条件：用户手写配置把静态跳转指向代理 backend。
+		// 不能允许保存后静默失败，因为 sing-box 目标改写只适合 direct 路径。
+		// 防止 UI 显示已生效但实际仍走原目标或代理链路。
+		return nil, fmt.Errorf("静态跳转 outbound 只支持 direct: %s", outbound)
+	}
+	if strings.ContainsAny(address, " \t/") {
+		return nil, fmt.Errorf("静态跳转地址格式错误: %s", address)
+	}
+	m := map[string]any{
+		"action":           "route",
+		"outbound":         "direct",
+		"override_address": address,
+		"override_port":    rule.Port,
+	}
+	if err := applyRouteMatch(m, match, "静态跳转"); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// applyRouteMatch 将域名或 IP/CIDR 匹配条件写入 sing-box 路由规则。
+func applyRouteMatch(m map[string]any, match string, label string) error {
+	match = strings.TrimSpace(match)
 	if strings.HasPrefix(strings.ToLower(match), "domain:") {
 		domain := strings.TrimPrefix(strings.TrimSpace(match[len("domain:"):]), ".")
 		if domain == "" {
-			return nil, fmt.Errorf("动态出口域名为空: %s", match)
+			return fmt.Errorf("%s域名为空: %s", label, match)
 		}
 		m["domain"] = []string{domain}
 		m["domain_suffix"] = []string{"." + domain}
-		return m, nil
+		return nil
 	}
 	if looksLikeIPOrCIDR(match) {
 		m["ip_cidr"] = []string{NormalizeCIDR(match)}
-		return m, nil
+		return nil
 	}
 	if strings.ContainsAny(match, " \t/") {
-		return nil, fmt.Errorf("动态出口只支持域名或 IP/CIDR: %s", match)
+		return fmt.Errorf("%s只支持域名或 IP/CIDR: %s", label, match)
 	}
 	domain := strings.TrimPrefix(match, ".")
+	if domain == "" {
+		return fmt.Errorf("%s域名为空: %s", label, match)
+	}
 	m["domain"] = []string{domain}
 	m["domain_suffix"] = []string{"." + domain}
-	return m, nil
+	return nil
 }
 
 // looksLikeIPOrCIDR 判断文本是否为 IP 或 CIDR。
