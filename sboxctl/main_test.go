@@ -866,6 +866,25 @@ func TestBuildDynamicGroupOutbound(t *testing.T) {
 	}
 }
 
+// TestResolveMemberTagMapIncludesImports 验证导入节点能被动态组探测解析。
+func TestResolveMemberTagMapIncludesImports(t *testing.T) {
+	dir := t.TempDir()
+	app := &App{SubscriptionDir: filepath.Join(dir, "sub")}
+	if _, err := app.SaveSubscriptionCache("frank", []ProxyBackend{
+		&HY2Backend{Key: "kr", Server: "kr.example", Port: 443, Password: "p"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{Backend: BackendConfig{Imports: []ImportedNodeGroup{{Key: "frank", Source: "clash"}}}}
+	refs, err := app.ResolveMemberTagMap(&cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refs["import.frank.kr"] != "import-frank-kr" {
+		t.Fatalf("导入节点引用解析错误: %+v", refs)
+	}
+}
+
 // TestReferencedDynamicGroups 验证被当前出口和动态出口引用的组都会被探测。
 func TestReferencedDynamicGroups(t *testing.T) {
 	cfg := Config{}
@@ -955,8 +974,51 @@ func TestEvaluateGroupTargetPrimaryBackup(t *testing.T) {
 		},
 		"b": {{OK: true, DelayMS: 20}},
 	})
-	if best != "b" {
-		t.Fatalf("主节点最近一轮有失败时应该切换备节点: %s", best)
+	if best != "a" {
+		t.Fatalf("主节点最新一次恢复时应该回主节点: %s", best)
+	}
+	best = EvaluateGroupTarget(group, map[string][]GroupProbeRecord{
+		"a": {
+			{OK: false},
+			{OK: false},
+		},
+		"b": {{OK: true, DelayMS: 80}},
+		"c": {{OK: true, DelayMS: 20}},
+	})
+	if best != "c" {
+		t.Fatalf("完整探测结束后主未恢复时应该选择最优备节点: %s", best)
+	}
+}
+
+// TestEvaluatePrimaryBackupImmediateTarget 验证主节点单次失败后立刻选择可用备节点。
+func TestEvaluatePrimaryBackupImmediateTarget(t *testing.T) {
+	group := DynamicGroupConfig{
+		Key:     "main",
+		Mode:    dynamicGroupModePrimaryBackup,
+		Primary: "a",
+		Members: []string{"a", "b", "c"},
+	}
+	best := EvaluatePrimaryBackupImmediateTarget(group, map[string][]GroupProbeRecord{
+		"a": {{OK: false}},
+		"b": {{OK: true, DelayMS: 80}},
+		"c": {{OK: true, DelayMS: 20}},
+	})
+	if best != "c" {
+		t.Fatalf("主节点失败后应该立即选择最优备节点: %s", best)
+	}
+	best = EvaluatePrimaryBackupImmediateTarget(group, map[string][]GroupProbeRecord{
+		"a": {{OK: false}},
+		"b": {{OK: false}},
+	})
+	if best != "" {
+		t.Fatalf("没有成功备节点时不应立即切换: %s", best)
+	}
+	best = EvaluatePrimaryBackupImmediateTarget(group, map[string][]GroupProbeRecord{
+		"a": {{OK: true, DelayMS: 300}},
+		"b": {{OK: true, DelayMS: 20}},
+	})
+	if best != "" {
+		t.Fatalf("主节点成功时不应立即切换: %s", best)
 	}
 }
 

@@ -2909,11 +2909,16 @@ func (a *App) ProbeDynamicGroup(ctx context.Context, group DynamicGroupConfig, m
 	if len(activeMembers) == 0 {
 		return fmt.Errorf("动态组没有可用成员: %s", group.Key)
 	}
+	immediateMember := a.GroupRuntime.Status(group.Key).BestMember
 	for i, delay := range groupProbeDelays {
 		if !sleepContext(ctx, delay) {
 			return ctx.Err()
 		}
-		for memberRef, tag := range activeMembers {
+		for _, memberRef := range group.Members {
+			tag := activeMembers[memberRef]
+			if tag == "" {
+				continue
+			}
 			record := GroupProbeRecord{At: time.Now().Format(time.RFC3339)}
 			delayMS, err := a.ProbeOutboundDelay(tag, "")
 			if err != nil {
@@ -2924,6 +2929,16 @@ func (a *App) ProbeDynamicGroup(ctx context.Context, group DynamicGroupConfig, m
 			}
 			a.GroupRuntime.AppendProbe(group.Key, memberRef, record)
 			a.Logger.Info("动态组探测 group=%s member=%s round=%d ok=%v delay=%d", group.Key, memberRef, i+1, record.OK, record.DelayMS)
+			// 触发条件：主备模式主节点最新探测失败。
+			// 不能直接等三轮结束，否则失败已经出现时仍会继续走主节点。
+			// 防止故障主节点在完整探测窗口内继续承载流量。
+			nextImmediateMember, switchErr := a.SwitchPrimaryBackupAfterProbe(group, groupTag, activeMembers, immediateMember)
+			if switchErr != nil {
+				return switchErr
+			}
+			if nextImmediateMember != "" {
+				immediateMember = nextImmediateMember
+			}
 		}
 	}
 	status := a.GroupRuntime.Status(group.Key)
@@ -2949,6 +2964,32 @@ func (a *App) ProbeDynamicGroup(ctx context.Context, group DynamicGroupConfig, m
 	return nil
 }
 
+// SwitchPrimaryBackupAfterProbe 在主节点单次失败后立即切到已知可用备节点。
+func (a *App) SwitchPrimaryBackupAfterProbe(group DynamicGroupConfig, groupTag string, activeMembers map[string]string, currentMember string) (string, error) {
+	if normalizeDynamicGroupMode(group.Mode) != dynamicGroupModePrimaryBackup {
+		return "", nil
+	}
+	primary := strings.TrimSpace(group.Primary)
+	if currentMember != "" && currentMember != primary {
+		return "", nil
+	}
+	status := a.GroupRuntime.Status(group.Key)
+	bestMember := EvaluatePrimaryBackupImmediateTarget(group, status.Results)
+	if bestMember == "" || bestMember == currentMember {
+		return "", nil
+	}
+	bestTag := activeMembers[bestMember]
+	if bestTag == "" {
+		return "", nil
+	}
+	a.GroupRuntime.SetBest(group.Key, bestMember, bestTag)
+	if err := a.SwitchSelectorOutbound(groupTag, bestTag); err != nil {
+		return "", err
+	}
+	a.Logger.Warn("主备组主节点失败，立即切换备节点 group=%s primary=%s backup=%s tag=%s", group.Key, group.Primary, bestMember, bestTag)
+	return bestMember, nil
+}
+
 // ResolveMemberTagMap 解析所有真实节点链路 key 到 outbound tag。
 func (a *App) ResolveMemberTagMap(cfg *Config) (map[string]string, error) {
 	refs := map[string]string{}
@@ -2969,6 +3010,17 @@ func (a *App) ResolveMemberTagMap(cfg *Config) (map[string]string, error) {
 		MakeUniqueBackendKeys(nodes)
 		for _, node := range nodes {
 			refs["sub."+sub.Key+"."+node.BackendKey()] = RuntimeBackendTag("sub-"+sub.Key, node.BackendKey())
+		}
+	}
+	for _, item := range cfg.Backend.Imports {
+		nodes, err := a.LoadSubscriptionCache(item.Key)
+		if err != nil {
+			a.Logger.Warn("动态组跳过不可用导入 key=%s err=%v", item.Key, err)
+			continue
+		}
+		MakeUniqueBackendKeys(nodes)
+		for _, node := range nodes {
+			refs["import."+item.Key+"."+node.BackendKey()] = RuntimeBackendTag("import-"+item.Key, node.BackendKey())
 		}
 	}
 	return refs, nil
@@ -3038,25 +3090,43 @@ func EvaluateGroupTarget(group DynamicGroupConfig, results map[string][]GroupPro
 	return primary
 }
 
-// groupMemberRecentlyOK 判断成员最近一轮探测是否全成功。
+// EvaluatePrimaryBackupImmediateTarget 在主节点最新记录失败时选择可立即接管的备节点。
+func EvaluatePrimaryBackupImmediateTarget(group DynamicGroupConfig, results map[string][]GroupProbeRecord) string {
+	if normalizeDynamicGroupMode(group.Mode) != dynamicGroupModePrimaryBackup {
+		return ""
+	}
+	primary := strings.TrimSpace(group.Primary)
+	if primary == "" || !groupMemberLastFailed(primary, results) {
+		return ""
+	}
+	var backups []string
+	for _, member := range group.Members {
+		if member != primary {
+			backups = append(backups, member)
+		}
+	}
+	return EvaluateGroupBest(backups, results)
+}
+
+// groupMemberRecentlyOK 判断成员最新一次探测是否成功。
 func groupMemberRecentlyOK(member string, results map[string][]GroupProbeRecord) bool {
 	records := results[member]
 	if len(records) == 0 {
 		return false
 	}
-	window := len(groupProbeDelays)
-	if window <= 0 || window > len(records) {
-		window = len(records)
+	// 触发条件：主备组一轮三次探测中间发生抖动。
+	// 不能直接看三次里是否存在失败，否则最后恢复的主节点仍被判异常。
+	// 防止主节点短暂失败后在轮末被错误留在备节点。
+	return records[len(records)-1].OK
+}
+
+// groupMemberLastFailed 判断成员最新一次探测是否失败。
+func groupMemberLastFailed(member string, results map[string][]GroupProbeRecord) bool {
+	records := results[member]
+	if len(records) == 0 {
+		return false
 	}
-	for _, record := range records[len(records)-window:] {
-		if !record.OK {
-			// 触发条件：主备组主节点最近一轮出现任意失败。
-			// 不能等到整轮全部失败才切，否则抖动节点会继续占主。
-			// 防止主节点间歇超时仍长时间承载默认流量。
-			return false
-		}
-	}
-	return true
+	return !records[len(records)-1].OK
 }
 
 // normalizeDynamicGroupMode 规范化动态组模式。
