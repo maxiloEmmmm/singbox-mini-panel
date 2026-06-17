@@ -405,6 +405,24 @@ input {
   width: 96px;
 }
 
+.probe-count-input.ant-input-number {
+  width: 96px;
+}
+
+.probe-count-input .ant-input-number-input {
+  color: #111827;
+  text-align: center;
+}
+
+.probe-target-row {
+  display: grid;
+  margin-top: 8px;
+}
+
+.probe-modal-target-row {
+  margin-top: 0;
+}
+
 .probe-popover-results {
   display: grid;
   gap: 4px;
@@ -750,6 +768,11 @@ input {
   line-height: 1.5;
 }
 
+.compact-textarea {
+  height: auto !important;
+  min-height: 86px !important;
+}
+
 .singbox-config-view {
   min-height: 220px;
   height: 100%;
@@ -1022,6 +1045,41 @@ input {
   color: #475467;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.override-target-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px;
+  gap: 8px;
+}
+
+.override-port-input {
+  min-width: 0;
+}
+
+.import-content-field {
+  align-items: start;
+}
+
+.import-file-field {
+  align-items: center;
+}
+
+.import-file-field small {
+  overflow: hidden;
+  color: #667085;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.import-file-input {
+  min-width: 0;
+  color: #344054;
+}
+
+.import-textarea {
+  min-height: 280px !important;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 @media (max-width: 860px) {

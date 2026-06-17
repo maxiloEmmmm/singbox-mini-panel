@@ -265,8 +265,16 @@ type ServiceConfig struct {
 type InboundConfig struct {
 	// Mode 是入口模式，支持 tun 和 mixed。
 	Mode string `yaml:"mode"`
+	// Tun 是 TUN 入站配置。
+	Tun TunInboundConfig `yaml:"tun"`
 	// Mixed 是 socks/http 混合端口配置。
 	Mixed MixedInboundConfig `yaml:"mixed"`
+}
+
+// TunInboundConfig 表示 TUN 入站配置，适用于透明代理旁路场景。
+type TunInboundConfig struct {
+	// RouteExcludeAddress 是不交给 sing-box TUN 捕获的 IP/CIDR。
+	RouteExcludeAddress []string `yaml:"route_exclude_address"`
 }
 
 // MixedInboundConfig 表示 mixed 入站配置，适用于非 TUN 手动代理。
@@ -327,6 +335,8 @@ type BackendConfig struct {
 	Static []StaticBackend `yaml:"static"`
 	// Subscription 保存订阅地址。
 	Subscription []Subscription `yaml:"subscription"`
+	// Imports 保存手动导入的离线节点来源。
+	Imports []ImportedNodeGroup `yaml:"imports"`
 	// Groups 保存动态节点组。
 	Groups []DynamicGroupConfig `yaml:"groups"`
 }
@@ -360,6 +370,10 @@ const (
 	staticProtocolTrojan = "trojan"
 	// staticProtocolAnyTLS 表示静态节点使用 AnyTLS 协议。
 	staticProtocolAnyTLS = "anytls"
+	// staticProtocolSocks 表示静态节点使用 SOCKS5 协议。
+	staticProtocolSocks = "socks"
+	// staticProtocolHTTP 表示静态节点使用 HTTP CONNECT 代理。
+	staticProtocolHTTP = "http"
 )
 
 // PolicyConfig 表示路由最终策略，适用于多个代理后端场景。
@@ -368,8 +382,26 @@ type PolicyConfig struct {
 	Default string `yaml:"default"`
 	// Fallback 是预留的故障切换顺序，当前用于选择器生成。
 	Fallback []string `yaml:"fallback"`
+	// Overrides 保存目的地址静态跳转规则。
+	Overrides []OverrideRule `yaml:"overrides"`
 	// DynamicOutbound 保存目的匹配到指定出口的规则。
 	DynamicOutbound []DynamicOutboundRule `yaml:"dynamic_outbound"`
+}
+
+// OverrideRule 表示命中目标后改写连接目标的静态跳转规则。
+type OverrideRule struct {
+	// Key 是规则唯一机器标识，适用于 Web 编辑和去重。
+	Key string `yaml:"key" json:"key"`
+	// Match 是匹配条件，支持 domain:xx.com 或 IP/CIDR。
+	Match string `yaml:"match" json:"match"`
+	// Address 是连接被改写后的目标地址。
+	Address string `yaml:"address" json:"address"`
+	// Port 是连接被改写后的目标端口。
+	Port int `yaml:"port" json:"port"`
+	// Outbound 是改写后使用的出站，空值时使用 direct。
+	Outbound string `yaml:"outbound" json:"outbound"`
+	// Enabled 控制该跳转规则是否参与渲染。
+	Enabled *bool `yaml:"enabled" json:"enabled"`
 }
 
 // DynamicOutboundRule 表示目的地址固定走指定 backend 的规则。
@@ -584,9 +616,49 @@ type AnyTLSBackend struct {
 	Source string `yaml:"-" json:"-"`
 }
 
+// SocksBackend 表示一个 SOCKS5 出站节点。
+type SocksBackend struct {
+	// Key 是静态列表或订阅内唯一机器标识。
+	Key string `yaml:"key" json:"key"`
+	// Tag 是 sing-box outbound 的唯一标识。
+	Tag string `yaml:"tag" json:"tag"`
+	// Name 是人类可读节点名称。
+	Name string `yaml:"name" json:"name"`
+	// Server 是 SOCKS5 服务端域名或 IP。
+	Server string `yaml:"server" json:"server"`
+	// Port 是 SOCKS5 服务端端口。
+	Port int `yaml:"port" json:"port"`
+	// Username 是 SOCKS5 认证用户名，空值表示无认证。
+	Username string `yaml:"username,omitempty" json:"username,omitempty"`
+	// Password 是 SOCKS5 认证密码，空值表示无认证或仅用户名。
+	Password string `yaml:"password,omitempty" json:"password,omitempty"`
+	// Source 记录节点来自 static 还是 subscription，便于日志定位。
+	Source string `yaml:"-" json:"-"`
+}
+
+// HTTPBackend 表示一个 HTTP CONNECT 出站节点。
+type HTTPBackend struct {
+	// Key 是静态列表或订阅内唯一机器标识。
+	Key string `yaml:"key" json:"key"`
+	// Tag 是 sing-box outbound 的唯一标识。
+	Tag string `yaml:"tag" json:"tag"`
+	// Name 是人类可读节点名称。
+	Name string `yaml:"name" json:"name"`
+	// Server 是 HTTP 代理服务端域名或 IP。
+	Server string `yaml:"server" json:"server"`
+	// Port 是 HTTP 代理服务端端口。
+	Port int `yaml:"port" json:"port"`
+	// Username 是 HTTP 代理认证用户名，空值表示无认证。
+	Username string `yaml:"username,omitempty" json:"username,omitempty"`
+	// Password 是 HTTP 代理认证密码，空值表示无认证或仅用户名。
+	Password string `yaml:"password,omitempty" json:"password,omitempty"`
+	// Source 记录节点来自 static 还是 subscription，便于日志定位。
+	Source string `yaml:"-" json:"-"`
+}
+
 // StaticBackend 表示 Web 可编辑的扁平静态节点。
 type StaticBackend struct {
-	// Protocol 是节点协议，支持 hy2、vmess、ss、trojan 和 anytls。
+	// Protocol 是节点协议，支持 hy2、vmess、ss、trojan、anytls、socks 和 http。
 	Protocol string `yaml:"protocol,omitempty" json:"protocol"`
 	// Key 是静态列表内唯一机器标识。
 	Key string `yaml:"key,omitempty" json:"key"`
@@ -598,8 +670,10 @@ type StaticBackend struct {
 	Server string `yaml:"server,omitempty" json:"server"`
 	// Port 是服务端端口。
 	Port int `yaml:"port,omitempty" json:"port"`
-	// Password 是 HY2、Shadowsocks、Trojan 或 AnyTLS 密码。
+	// Password 是 HY2、Shadowsocks、Trojan、AnyTLS、SOCKS 或 HTTP 密码。
 	Password string `yaml:"password,omitempty" json:"password"`
+	// Username 是 SOCKS5 或 HTTP 代理认证用户名。
+	Username string `yaml:"username,omitempty" json:"username"`
 	// SNI 是 TLS SNI。
 	SNI string `yaml:"sni,omitempty" json:"sni"`
 	// Insecure 控制是否跳过 TLS 证书校验。
@@ -632,8 +706,12 @@ type StaticBackend struct {
 	IdleSessionTimeout string `yaml:"idle_session_timeout,omitempty" json:"idle_session_timeout"`
 	// MinIdleSession 是 AnyTLS 至少保留的空闲会话数量。
 	MinIdleSession int `yaml:"min_idle_session,omitempty" json:"min_idle_session"`
+	// Detour 是拨号前置出口引用，支持 static/sub/import/group 范围。
+	Detour string `yaml:"detour,omitempty" json:"detour"`
 	// Source 记录节点来源，便于运行日志定位。
 	Source string `yaml:"-" json:"-"`
+	// RuntimeDetour 是 ResolveBackends 解析后的 sing-box outbound tag。
+	RuntimeDetour string `yaml:"-" json:"-"`
 }
 
 // DynamicGroupBackend 表示一个动态组虚拟出站。
@@ -666,6 +744,10 @@ type SubscriptionCacheNode struct {
 	Trojan *TrojanBackend `json:"trojan,omitempty"`
 	// AnyTLS 保存 AnyTLS 节点。
 	AnyTLS *AnyTLSBackend `json:"anytls,omitempty"`
+	// Socks 保存 SOCKS5 节点。
+	Socks *SocksBackend `json:"socks,omitempty"`
+	// HTTP 保存 HTTP 代理节点。
+	HTTP *HTTPBackend `json:"http,omitempty"`
 }
 
 // BackendTag 返回 HY2 节点 tag。
@@ -918,6 +1000,106 @@ func (b *AnyTLSBackend) BuildOutbound() map[string]any {
 	return BuildAnyTLSOutbound(*b)
 }
 
+// BackendTag 返回 SOCKS5 节点 tag。
+func (b *SocksBackend) BackendTag() string {
+	return b.Tag
+}
+
+// BackendKey 返回 SOCKS5 节点范围内 key。
+func (b *SocksBackend) BackendKey() string {
+	return firstNonEmpty(b.Key, b.Tag)
+}
+
+// BackendName 返回 SOCKS5 展示名称。
+func (b *SocksBackend) BackendName() string {
+	return firstNonEmpty(b.Name, b.Key, b.Tag)
+}
+
+// BackendProtocol 返回 SOCKS5 协议名。
+func (b *SocksBackend) BackendProtocol() string {
+	return "socks"
+}
+
+// BackendServer 返回 SOCKS5 服务端。
+func (b *SocksBackend) BackendServer() string {
+	return b.Server
+}
+
+// BackendPort 返回 SOCKS5 服务端端口。
+func (b *SocksBackend) BackendPort() int {
+	return b.Port
+}
+
+// SetBackendTag 写入 SOCKS5 节点 tag。
+func (b *SocksBackend) SetBackendTag(tag string) {
+	b.Tag = tag
+}
+
+// SetBackendKey 写入 SOCKS5 节点 key。
+func (b *SocksBackend) SetBackendKey(key string) {
+	b.Key = key
+}
+
+// SetBackendSource 写入 SOCKS5 节点来源。
+func (b *SocksBackend) SetBackendSource(source string) {
+	b.Source = source
+}
+
+// BuildOutbound 构造 SOCKS5 sing-box outbound。
+func (b *SocksBackend) BuildOutbound() map[string]any {
+	return BuildSocksOutbound(*b)
+}
+
+// BackendTag 返回 HTTP 代理节点 tag。
+func (b *HTTPBackend) BackendTag() string {
+	return b.Tag
+}
+
+// BackendKey 返回 HTTP 代理节点范围内 key。
+func (b *HTTPBackend) BackendKey() string {
+	return firstNonEmpty(b.Key, b.Tag)
+}
+
+// BackendName 返回 HTTP 代理展示名称。
+func (b *HTTPBackend) BackendName() string {
+	return firstNonEmpty(b.Name, b.Key, b.Tag)
+}
+
+// BackendProtocol 返回 HTTP 代理协议名。
+func (b *HTTPBackend) BackendProtocol() string {
+	return "http"
+}
+
+// BackendServer 返回 HTTP 代理服务端。
+func (b *HTTPBackend) BackendServer() string {
+	return b.Server
+}
+
+// BackendPort 返回 HTTP 代理服务端端口。
+func (b *HTTPBackend) BackendPort() int {
+	return b.Port
+}
+
+// SetBackendTag 写入 HTTP 代理节点 tag。
+func (b *HTTPBackend) SetBackendTag(tag string) {
+	b.Tag = tag
+}
+
+// SetBackendKey 写入 HTTP 代理节点 key。
+func (b *HTTPBackend) SetBackendKey(key string) {
+	b.Key = key
+}
+
+// SetBackendSource 写入 HTTP 代理节点来源。
+func (b *HTTPBackend) SetBackendSource(source string) {
+	b.Source = source
+}
+
+// BuildOutbound 构造 HTTP 代理 sing-box outbound。
+func (b *HTTPBackend) BuildOutbound() map[string]any {
+	return BuildHTTPOutbound(*b)
+}
+
 // BackendTag 返回静态节点运行时 tag。
 func (b *StaticBackend) BackendTag() string {
 	return b.Tag
@@ -968,19 +1150,25 @@ func (b *StaticBackend) BuildOutbound() map[string]any {
 	switch b.BackendProtocol() {
 	case staticProtocolVMess:
 		node := b.toVMessBackend()
-		return node.BuildOutbound()
+		return applyStaticDetour(node.BuildOutbound(), b.RuntimeDetour)
 	case staticProtocolSS:
 		node := b.toSSBackend()
-		return node.BuildOutbound()
+		return applyStaticDetour(node.BuildOutbound(), b.RuntimeDetour)
 	case staticProtocolTrojan:
 		node := b.toTrojanBackend()
-		return node.BuildOutbound()
+		return applyStaticDetour(node.BuildOutbound(), b.RuntimeDetour)
 	case staticProtocolAnyTLS:
 		node := b.toAnyTLSBackend()
-		return node.BuildOutbound()
+		return applyStaticDetour(node.BuildOutbound(), b.RuntimeDetour)
+	case staticProtocolSocks:
+		node := b.toSocksBackend()
+		return applyStaticDetour(node.BuildOutbound(), b.RuntimeDetour)
+	case staticProtocolHTTP:
+		node := b.toHTTPBackend()
+		return applyStaticDetour(node.BuildOutbound(), b.RuntimeDetour)
 	default:
 		node := b.toHY2Backend()
-		return node.BuildOutbound()
+		return applyStaticDetour(node.BuildOutbound(), b.RuntimeDetour)
 	}
 }
 
@@ -1037,6 +1225,14 @@ func (b *StaticBackend) toSSBackend() SSBackend {
 	}
 }
 
+// applyStaticDetour 写入静态节点 sing-box 拨号前置出口。
+func applyStaticDetour(out map[string]any, detour string) map[string]any {
+	if strings.TrimSpace(detour) != "" {
+		out["detour"] = strings.TrimSpace(detour)
+	}
+	return out
+}
+
 // toTrojanBackend 将扁平静态配置投影为 Trojan 运行节点。
 func (b *StaticBackend) toTrojanBackend() TrojanBackend {
 	return TrojanBackend{
@@ -1071,6 +1267,34 @@ func (b *StaticBackend) toAnyTLSBackend() AnyTLSBackend {
 		IdleSessionTimeout:       b.IdleSessionTimeout,
 		MinIdleSession:           b.MinIdleSession,
 		Source:                   b.Source,
+	}
+}
+
+// toSocksBackend 将扁平静态配置投影为 SOCKS5 运行节点。
+func (b *StaticBackend) toSocksBackend() SocksBackend {
+	return SocksBackend{
+		Key:      b.Key,
+		Tag:      b.Tag,
+		Name:     b.Name,
+		Server:   b.Server,
+		Port:     b.Port,
+		Username: b.Username,
+		Password: b.Password,
+		Source:   b.Source,
+	}
+}
+
+// toHTTPBackend 将扁平静态配置投影为 HTTP 代理运行节点。
+func (b *StaticBackend) toHTTPBackend() HTTPBackend {
+	return HTTPBackend{
+		Key:      b.Key,
+		Tag:      b.Tag,
+		Name:     b.Name,
+		Server:   b.Server,
+		Port:     b.Port,
+		Username: b.Username,
+		Password: b.Password,
+		Source:   b.Source,
 	}
 }
 
@@ -1219,6 +1443,16 @@ type Subscription struct {
 	UserAgent string `yaml:"user_agent" json:"user_agent"`
 	// Default 是该订阅中优先选用的节点 tag。
 	Default string `yaml:"default" json:"default"`
+}
+
+// ImportedNodeGroup 表示一个手动导入的离线节点来源。
+type ImportedNodeGroup struct {
+	// Key 是导入来源唯一机器标识。
+	Key string `yaml:"key" json:"key"`
+	// Name 是导入来源展示名。
+	Name string `yaml:"name" json:"name"`
+	// Source 是导入格式，目前支持 clash。
+	Source string `yaml:"source" json:"source"`
 }
 
 // LocalRule 表示一行自定义规则，适用于强制直连和强制代理列表。
@@ -1391,6 +1625,8 @@ type WebStateResponse struct {
 	Static []WebBackend `json:"static"`
 	// Subscriptions 保存订阅分组节点列表。
 	Subscriptions []WebSubscription `json:"subscriptions"`
+	// Imports 保存手动导入分组节点列表。
+	Imports []WebImportedGroup `json:"imports"`
 	// DynamicGroups 保存动态节点组列表。
 	DynamicGroups []WebDynamicGroup `json:"dynamic_groups"`
 	// GeoFiles 保存 geofiles 本地缓存详情。
@@ -1403,6 +1639,8 @@ type WebStateResponse struct {
 	ForceProxy string `json:"force_proxy"`
 	// ForceDirect 是强制直连规则文件内容。
 	ForceDirect string `json:"force_direct"`
+	// Overrides 保存目的地址静态跳转规则。
+	Overrides []OverrideRule `json:"overrides"`
 	// DynamicOutbound 保存目的匹配到指定出口的规则。
 	DynamicOutbound []DynamicOutboundRule `json:"dynamic_outbound"`
 	// SingBoxConfig 是当前保存配置生成的 sing-box JSON。
@@ -1429,6 +1667,8 @@ type WebBackend struct {
 	Source string `json:"source"`
 	// Password 是 HY2 静态节点认证密码或 Shadowsocks 密码。
 	Password string `json:"password,omitempty"`
+	// Username 是 SOCKS5 静态节点认证用户名。
+	Username string `json:"username,omitempty"`
 	// SNI 是 HY2 静态节点 TLS SNI。
 	SNI string `json:"sni,omitempty"`
 	// Insecure 控制 HY2 静态节点是否跳过证书校验。
@@ -1461,6 +1701,8 @@ type WebBackend struct {
 	IdleSessionTimeout string `json:"idle_session_timeout,omitempty"`
 	// MinIdleSession 是 AnyTLS 至少保留的空闲会话数量。
 	MinIdleSession int `json:"min_idle_session,omitempty"`
+	// Detour 是静态节点链式拨号前置出口引用。
+	Detour string `json:"detour,omitempty"`
 }
 
 // WebSubscription 表示前端展示的订阅分组。
@@ -1478,6 +1720,20 @@ type WebSubscription struct {
 	// Default 是订阅内默认节点 key。
 	Default string `json:"default"`
 	// Nodes 是该订阅缓存中的节点。
+	Nodes []WebBackend `json:"nodes"`
+	// Error 是读取缓存失败时的说明。
+	Error string `json:"error,omitempty"`
+}
+
+// WebImportedGroup 表示前端展示的手动导入分组。
+type WebImportedGroup struct {
+	// Key 是导入分组机器标识。
+	Key string `json:"key"`
+	// Name 是导入分组展示名。
+	Name string `json:"name"`
+	// Source 是导入格式，目前支持 clash。
+	Source string `json:"source"`
+	// Nodes 是该导入缓存中的节点。
 	Nodes []WebBackend `json:"nodes"`
 	// Error 是读取缓存失败时的说明。
 	Error string `json:"error,omitempty"`
@@ -1537,6 +1793,8 @@ type WebGeoFile struct {
 type WebInboundConfig struct {
 	// InboundMode 是入口模式，支持 tun 和 mixed。
 	InboundMode string `json:"inbound_mode"`
+	// TunRouteExcludeAddress 是 TUN 入站排除捕获的 IP/CIDR。
+	TunRouteExcludeAddress []string `json:"tun_route_exclude_address"`
 	// MixedListen 是 mixed 入站监听地址。
 	MixedListen string `json:"mixed_listen"`
 	// MixedPort 是 mixed 入站监听端口。
@@ -1557,6 +1815,8 @@ type WebSaveRequest struct {
 	Static []StaticBackend `json:"static"`
 	// Subscriptions 是 Web 提交的订阅配置。
 	Subscriptions []Subscription `json:"subscriptions"`
+	// Imports 是 Web 提交的手动导入来源配置。
+	Imports []ImportedNodeGroup `json:"imports"`
 	// DynamicGroups 是 Web 提交的动态节点组配置。
 	DynamicGroups []DynamicGroupConfig `json:"dynamic_groups"`
 	// Inbound 保存入口模式和 mixed 监听配置。
@@ -1565,6 +1825,8 @@ type WebSaveRequest struct {
 	ForceProxy string `json:"force_proxy"`
 	// ForceDirect 是强制直连规则文件内容。
 	ForceDirect string `json:"force_direct"`
+	// Overrides 保存目的地址静态跳转规则。
+	Overrides []OverrideRule `json:"overrides"`
 	// DynamicOutbound 保存目的匹配到指定出口的规则。
 	DynamicOutbound []DynamicOutboundRule `json:"dynamic_outbound"`
 	// AdsBlock 控制广告规则是否启用。
@@ -1591,6 +1853,28 @@ type WebSubscriptionUpdateRequest struct {
 	Name string `json:"name"`
 	// UseProxy 表示这次 Web 手动更新是否强制使用 update.proxy。
 	UseProxy bool `json:"use_proxy"`
+}
+
+// WebImportRequest 表示一次手动导入请求。
+type WebImportRequest struct {
+	// Key 是要写入或替换的导入分组 key。
+	Key string `json:"key"`
+	// Name 是导入分组展示名。
+	Name string `json:"name"`
+	// Source 是导入格式，目前支持 clash。
+	Source string `json:"source"`
+	// Content 是用户粘贴的原始配置内容。
+	Content string `json:"content"`
+}
+
+// WebImportResponse 表示手动导入解析结果。
+type WebImportResponse struct {
+	// Imported 是最终写入缓存的节点数量。
+	Imported int `json:"imported"`
+	// Skipped 是不支持或缺字段而跳过的节点数量。
+	Skipped int `json:"skipped"`
+	// Failed 是解析失败的节点数量。
+	Failed int `json:"failed"`
 }
 
 // WebRouteCheckRequest 表示 Web 路由检查请求。
@@ -1625,6 +1909,8 @@ type WebRouteCheckResponse struct {
 type WebProbeRequest struct {
 	// Tag 是要探测的 outbound tag。
 	Tag string `json:"tag"`
+	// URL 是本次 Web 临时探测目标，空值使用默认地址。
+	URL string `json:"url"`
 }
 
 // WebProbeResponse 表示节点时延探测结果。
@@ -2060,6 +2346,9 @@ backend:
 
 inbound:
   mode: tun
+  tun:
+    route_exclude_address:
+      # - cidr-or-ip
   mixed:
     listen: 0.0.0.0
     port: 1080
@@ -2633,13 +2922,18 @@ func (a *App) ProbeDynamicGroup(ctx context.Context, group DynamicGroupConfig, m
 	if len(activeMembers) == 0 {
 		return fmt.Errorf("动态组没有可用成员: %s", group.Key)
 	}
+	immediateMember := a.GroupRuntime.Status(group.Key).BestMember
 	for i, delay := range groupProbeDelays {
 		if !sleepContext(ctx, delay) {
 			return ctx.Err()
 		}
-		for memberRef, tag := range activeMembers {
+		for _, memberRef := range group.Members {
+			tag := activeMembers[memberRef]
+			if tag == "" {
+				continue
+			}
 			record := GroupProbeRecord{At: time.Now().Format(time.RFC3339)}
-			delayMS, err := a.ProbeOutboundDelay(tag)
+			delayMS, err := a.ProbeOutboundDelay(tag, "")
 			if err != nil {
 				record.Error = err.Error()
 			} else {
@@ -2648,6 +2942,16 @@ func (a *App) ProbeDynamicGroup(ctx context.Context, group DynamicGroupConfig, m
 			}
 			a.GroupRuntime.AppendProbe(group.Key, memberRef, record)
 			a.Logger.Info("动态组探测 group=%s member=%s round=%d ok=%v delay=%d", group.Key, memberRef, i+1, record.OK, record.DelayMS)
+			// 触发条件：主备模式主节点最新探测失败。
+			// 不能直接等三轮结束，否则失败已经出现时仍会继续走主节点。
+			// 防止故障主节点在完整探测窗口内继续承载流量。
+			nextImmediateMember, switchErr := a.SwitchPrimaryBackupAfterProbe(group, groupTag, activeMembers, immediateMember)
+			if switchErr != nil {
+				return switchErr
+			}
+			if nextImmediateMember != "" {
+				immediateMember = nextImmediateMember
+			}
 		}
 	}
 	status := a.GroupRuntime.Status(group.Key)
@@ -2673,6 +2977,32 @@ func (a *App) ProbeDynamicGroup(ctx context.Context, group DynamicGroupConfig, m
 	return nil
 }
 
+// SwitchPrimaryBackupAfterProbe 在主节点单次失败后立即切到已知可用备节点。
+func (a *App) SwitchPrimaryBackupAfterProbe(group DynamicGroupConfig, groupTag string, activeMembers map[string]string, currentMember string) (string, error) {
+	if normalizeDynamicGroupMode(group.Mode) != dynamicGroupModePrimaryBackup {
+		return "", nil
+	}
+	primary := strings.TrimSpace(group.Primary)
+	if currentMember != "" && currentMember != primary {
+		return "", nil
+	}
+	status := a.GroupRuntime.Status(group.Key)
+	bestMember := EvaluatePrimaryBackupImmediateTarget(group, status.Results)
+	if bestMember == "" || bestMember == currentMember {
+		return "", nil
+	}
+	bestTag := activeMembers[bestMember]
+	if bestTag == "" {
+		return "", nil
+	}
+	a.GroupRuntime.SetBest(group.Key, bestMember, bestTag)
+	if err := a.SwitchSelectorOutbound(groupTag, bestTag); err != nil {
+		return "", err
+	}
+	a.Logger.Warn("主备组主节点失败，立即切换备节点 group=%s primary=%s backup=%s tag=%s", group.Key, group.Primary, bestMember, bestTag)
+	return bestMember, nil
+}
+
 // ResolveMemberTagMap 解析所有真实节点链路 key 到 outbound tag。
 func (a *App) ResolveMemberTagMap(cfg *Config) (map[string]string, error) {
 	refs := map[string]string{}
@@ -2693,6 +3023,17 @@ func (a *App) ResolveMemberTagMap(cfg *Config) (map[string]string, error) {
 		MakeUniqueBackendKeys(nodes)
 		for _, node := range nodes {
 			refs["sub."+sub.Key+"."+node.BackendKey()] = RuntimeBackendTag("sub-"+sub.Key, node.BackendKey())
+		}
+	}
+	for _, item := range cfg.Backend.Imports {
+		nodes, err := a.LoadSubscriptionCache(item.Key)
+		if err != nil {
+			a.Logger.Warn("动态组跳过不可用导入 key=%s err=%v", item.Key, err)
+			continue
+		}
+		MakeUniqueBackendKeys(nodes)
+		for _, node := range nodes {
+			refs["import."+item.Key+"."+node.BackendKey()] = RuntimeBackendTag("import-"+item.Key, node.BackendKey())
 		}
 	}
 	return refs, nil
@@ -2762,25 +3103,43 @@ func EvaluateGroupTarget(group DynamicGroupConfig, results map[string][]GroupPro
 	return primary
 }
 
-// groupMemberRecentlyOK 判断成员最近一轮探测是否全成功。
+// EvaluatePrimaryBackupImmediateTarget 在主节点最新记录失败时选择可立即接管的备节点。
+func EvaluatePrimaryBackupImmediateTarget(group DynamicGroupConfig, results map[string][]GroupProbeRecord) string {
+	if normalizeDynamicGroupMode(group.Mode) != dynamicGroupModePrimaryBackup {
+		return ""
+	}
+	primary := strings.TrimSpace(group.Primary)
+	if primary == "" || !groupMemberLastFailed(primary, results) {
+		return ""
+	}
+	var backups []string
+	for _, member := range group.Members {
+		if member != primary {
+			backups = append(backups, member)
+		}
+	}
+	return EvaluateGroupBest(backups, results)
+}
+
+// groupMemberRecentlyOK 判断成员最新一次探测是否成功。
 func groupMemberRecentlyOK(member string, results map[string][]GroupProbeRecord) bool {
 	records := results[member]
 	if len(records) == 0 {
 		return false
 	}
-	window := len(groupProbeDelays)
-	if window <= 0 || window > len(records) {
-		window = len(records)
+	// 触发条件：主备组一轮三次探测中间发生抖动。
+	// 不能直接看三次里是否存在失败，否则最后恢复的主节点仍被判异常。
+	// 防止主节点短暂失败后在轮末被错误留在备节点。
+	return records[len(records)-1].OK
+}
+
+// groupMemberLastFailed 判断成员最新一次探测是否失败。
+func groupMemberLastFailed(member string, results map[string][]GroupProbeRecord) bool {
+	records := results[member]
+	if len(records) == 0 {
+		return false
 	}
-	for _, record := range records[len(records)-window:] {
-		if !record.OK {
-			// 触发条件：主备组主节点最近一轮出现任意失败。
-			// 不能等到整轮全部失败才切，否则抖动节点会继续占主。
-			// 防止主节点间歇超时仍长时间承载默认流量。
-			return false
-		}
-	}
-	return true
+	return !records[len(records)-1].OK
 }
 
 // normalizeDynamicGroupMode 规范化动态组模式。
@@ -3020,12 +3379,14 @@ func (a *App) LoadConfig() (Config, error) {
 func (a *App) ResolveBackends(cfg *Config, refreshSubscriptions bool) ([]ProxyBackend, error) {
 	result := make([]ProxyBackend, 0, len(cfg.Backend.Static))
 	memberTags := map[string]string{}
+	staticNodes := make([]*StaticBackend, 0, len(cfg.Backend.Static))
 	for _, b := range cfg.Backend.Static {
 		node := b
 		NormalizeBackendIdentity(&node)
 		node.SetBackendSource("static")
 		node.SetBackendTag(RuntimeBackendTag("static", node.BackendKey()))
 		memberTags["static."+node.BackendKey()] = node.BackendTag()
+		staticNodes = append(staticNodes, &node)
 		result = append(result, &node)
 	}
 	for _, sub := range cfg.Backend.Subscription {
@@ -3048,6 +3409,20 @@ func (a *App) ResolveBackends(cfg *Config, refreshSubscriptions bool) ([]ProxyBa
 			cfg.Policy.Default = sub.Default
 		}
 	}
+	for _, group := range cfg.Backend.Imports {
+		nodes, err := a.LoadSubscriptionCache(group.Key)
+		if err != nil {
+			a.Logger.Warn("跳过不可用导入 key=%s err=%v", group.Key, err)
+			continue
+		}
+		MakeUniqueBackendKeys(nodes)
+		for _, node := range nodes {
+			node.SetBackendSource("import:" + group.Key)
+			node.SetBackendTag(RuntimeBackendTag("import-"+group.Key, node.BackendKey()))
+			memberTags["import."+group.Key+"."+node.BackendKey()] = node.BackendTag()
+			result = append(result, node)
+		}
+	}
 	SortBackendsByProtocol(result)
 	for _, group := range cfg.Backend.Groups {
 		members := ResolveGroupMemberTags(group, memberTags)
@@ -3064,6 +3439,15 @@ func (a *App) ResolveBackends(cfg *Config, refreshSubscriptions bool) ([]ProxyBa
 			Members:    members,
 			BestTag:    bestTag,
 		})
+		memberTags["group."+group.Key] = RuntimeBackendTag("group", group.Key)
+	}
+	// 触发条件：静态节点 detour 指向订阅、导入或动态组。
+	// 不能在静态节点初始化时解析，因为这些目标此时尚未加载。
+	// 防止链式出口生成空 detour，导致 sing-box 静默走直连拨号。
+	for _, node := range staticNodes {
+		if detour := strings.TrimSpace(node.Detour); detour != "" {
+			node.RuntimeDetour = memberTags[detour]
+		}
 	}
 	ResolveConfiguredDefault(cfg, result)
 	return result, nil
@@ -3286,6 +3670,7 @@ func (a *App) StartWebServer(cfg Config) (*WebServer, error) {
 	mux.HandleFunc("/api/state", web.withAuth(web.handleState))
 	mux.HandleFunc("/api/save", web.withAuth(web.handleSave))
 	mux.HandleFunc("/api/subscription/update", web.withAuth(web.handleSubscriptionUpdate))
+	mux.HandleFunc("/api/import", web.withAuth(web.handleImport))
 	mux.HandleFunc("/api/node/probe", web.withAuth(web.handleNodeProbe))
 	mux.HandleFunc("/api/route/check", web.withAuth(web.handleRouteCheck))
 	mux.HandleFunc("/api/connections", web.withAuth(web.handleConnections))
@@ -3489,6 +3874,43 @@ func (w *WebServer) handleSubscriptionUpdate(rw http.ResponseWriter, req *http.R
 	writeJSON(rw, http.StatusOK, state)
 }
 
+// handleImport 解析手动导入内容并替换同 key 导入缓存。
+func (w *WebServer) handleImport(rw http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		writeJSON(rw, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	var body WebImportRequest
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		writeJSON(rw, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	w.Mutex.Lock()
+	defer w.Mutex.Unlock()
+	result, err := w.App.ImportNodeGroup(body)
+	if err != nil {
+		writeJSON(rw, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	cfg, err := w.App.LoadConfig()
+	if err == nil {
+		if err := w.App.ApplyWebPlan(WebApplyPlan{
+			ServiceEnabled:   ServiceEnabled(cfg),
+			Restart:          true,
+			SelectorSwitches: DesiredSelectorSwitches(cfg),
+		}); err != nil {
+			writeJSON(rw, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	state, err := w.App.BuildWebState()
+	if err != nil {
+		writeJSON(rw, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(rw, http.StatusOK, map[string]any{"result": result, "state": state})
+}
+
 // handleNodeProbe 触发单个节点时延探测。
 func (w *WebServer) handleNodeProbe(rw http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost {
@@ -3509,7 +3931,7 @@ func (w *WebServer) handleNodeProbe(rw http.ResponseWriter, req *http.Request) {
 		writeJSON(rw, http.StatusNotFound, map[string]string{"error": "outbound not found"})
 		return
 	}
-	delay, err := w.App.ProbeOutboundDelay(body.Tag)
+	delay, err := w.App.ProbeOutboundDelay(body.Tag, body.URL)
 	if err != nil {
 		writeJSON(rw, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
@@ -3688,6 +4110,26 @@ func (a *App) BuildWebState() (WebStateResponse, error) {
 		SortWebBackends(group.Nodes)
 		subscriptions = append(subscriptions, group)
 	}
+	imports := make([]WebImportedGroup, 0, len(cfg.Backend.Imports))
+	for _, item := range cfg.Backend.Imports {
+		group := WebImportedGroup{
+			Key:    item.Key,
+			Name:   firstNonEmpty(item.Name, item.Key),
+			Source: normalizeImportSource(item.Source),
+			Nodes:  make([]WebBackend, 0),
+		}
+		nodes, cacheErr := a.LoadSubscriptionCache(item.Key)
+		if cacheErr != nil {
+			group.Error = cacheErr.Error()
+		}
+		MakeUniqueBackendKeys(nodes)
+		for _, node := range nodes {
+			node.SetBackendTag(RuntimeBackendTag("import-"+item.Key, node.BackendKey()))
+			group.Nodes = append(group.Nodes, WebBackendFromBackend(node, "import:"+item.Key))
+		}
+		SortWebBackends(group.Nodes)
+		imports = append(imports, group)
+	}
 	SortWebBackends(staticNodes)
 	dynamicGroups := a.BuildWebDynamicGroups(cfg)
 	forceProxy, _ := os.ReadFile(a.ForceProxyPath)
@@ -3701,7 +4143,7 @@ func (a *App) BuildWebState() (WebStateResponse, error) {
 		return WebStateResponse{}, err
 	}
 	health := a.BuildWebHealth(cfg)
-	if active := firstConfiguredOutbound(cfg, staticNodes, subscriptions, dynamicGroups); active != "" {
+	if active := firstConfiguredOutbound(cfg, staticNodes, subscriptions, imports, dynamicGroups); active != "" {
 		health.ActiveOutbound = active
 	}
 	return WebStateResponse{
@@ -3709,12 +4151,15 @@ func (a *App) BuildWebState() (WebStateResponse, error) {
 		ConfigHash:    configHash,
 		Static:        staticNodes,
 		Subscriptions: subscriptions,
+		Imports:       imports,
 		DynamicGroups: dynamicGroups,
 		GeoFiles:      a.BuildWebGeoFiles(),
 		HostsOverride: HostsOverrideEnabled(cfg),
 		Inbound:       WebInboundFromConfig(cfg),
 		ForceProxy:    string(forceProxy),
 		ForceDirect:   string(forceDirect),
+		Overrides: append(make([]OverrideRule, 0, len(cfg.Policy.Overrides)),
+			cfg.Policy.Overrides...),
 		DynamicOutbound: append(make([]DynamicOutboundRule, 0, len(cfg.Policy.DynamicOutbound)),
 			cfg.Policy.DynamicOutbound...),
 		SingBoxConfig: singBoxConfig,
@@ -3798,9 +4243,10 @@ func (a *App) WebGeoFile(kind string, name string, cfg Config) WebGeoFile {
 func WebInboundFromConfig(cfg Config) WebInboundConfig {
 	MergeConfigDefaults(&cfg)
 	return WebInboundConfig{
-		InboundMode: cfg.Inbound.Mode,
-		MixedListen: cfg.Inbound.Mixed.Listen,
-		MixedPort:   cfg.Inbound.Mixed.Port,
+		InboundMode:            cfg.Inbound.Mode,
+		TunRouteExcludeAddress: append([]string(nil), cfg.Inbound.Tun.RouteExcludeAddress...),
+		MixedListen:            cfg.Inbound.Mixed.Listen,
+		MixedPort:              cfg.Inbound.Mixed.Port,
 	}
 }
 
@@ -3821,7 +4267,12 @@ func ApplyWebInboundConfig(cfg *Config, inbound WebInboundConfig) error {
 	if err != nil {
 		return err
 	}
+	tunRouteExcludeAddress, err := normalizeTunRouteExcludeAddress(inbound.TunRouteExcludeAddress, cfg.Inbound.Tun.RouteExcludeAddress)
+	if err != nil {
+		return err
+	}
 	cfg.Inbound.Mode = mode
+	cfg.Inbound.Tun.RouteExcludeAddress = tunRouteExcludeAddress
 	cfg.Inbound.Mixed.Listen = mixedListen
 	cfg.Inbound.Mixed.Port = mixedPort
 	return nil
@@ -3830,6 +4281,7 @@ func ApplyWebInboundConfig(cfg *Config, inbound WebInboundConfig) error {
 // WebInboundConfigProvided 判断旧前端保存请求是否携带入口配置。
 func WebInboundConfigProvided(inbound WebInboundConfig) bool {
 	return strings.TrimSpace(inbound.InboundMode) != "" ||
+		len(inbound.TunRouteExcludeAddress) > 0 ||
 		strings.TrimSpace(inbound.MixedListen) != "" ||
 		inbound.MixedPort != 0
 }
@@ -3849,6 +4301,42 @@ func normalizeInboundMode(value string, fallback string) (string, error) {
 	default:
 		return "", fmt.Errorf("入口模式不支持: %s", mode)
 	}
+}
+
+// normalizeTunRouteExcludeAddress 校验 TUN 捕获排除地址。
+func normalizeTunRouteExcludeAddress(values []string, fallback []string) ([]string, error) {
+	if values == nil {
+		return append([]string(nil), fallback...), nil
+	}
+	result := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		item := strings.TrimSpace(value)
+		if item == "" {
+			continue
+		}
+		normalized, err := normalizeTunRouteExcludeItem(item)
+		if err != nil {
+			return nil, err
+		}
+		if seen[normalized] {
+			continue
+		}
+		seen[normalized] = true
+		result = append(result, normalized)
+	}
+	return result, nil
+}
+
+// normalizeTunRouteExcludeItem 校验单个 TUN 捕获排除项。
+func normalizeTunRouteExcludeItem(value string) (string, error) {
+	if prefix, err := netip.ParsePrefix(value); err == nil {
+		return prefix.String(), nil
+	}
+	if addr, err := netip.ParseAddr(value); err == nil {
+		return addr.String(), nil
+	}
+	return "", fmt.Errorf("TUN 排除地址只支持 IP 或 CIDR: %s", value)
 }
 
 // normalizeMixedListen 校验 mixed 监听地址，防止把 host:port 写进 host 字段。
@@ -3944,13 +4432,25 @@ func (a *App) SaveWebState(req WebSaveRequest) error {
 	if err != nil {
 		return err
 	}
+	imports, err := NormalizeImportedGroupsForSave(req.Imports)
+	if err != nil {
+		return err
+	}
 	cfg.Backend.Static = staticNodes
 	cfg.Backend.Subscription = subscriptions
+	cfg.Backend.Imports = imports
 	groups, err := NormalizeDynamicGroupsForSave(req.DynamicGroups, a.AvailableMemberRefs(cfg))
 	if err != nil {
 		return err
 	}
 	cfg.Backend.Groups = groups
+	if err := a.ValidateStaticDetours(cfg); err != nil {
+		return err
+	}
+	overrides, err := NormalizeOverrideRules(req.Overrides)
+	if err != nil {
+		return err
+	}
 	dynamicRules, err := a.NormalizeDynamicOutboundRules(cfg, req.DynamicOutbound)
 	if err != nil {
 		return err
@@ -3959,6 +4459,7 @@ func (a *App) SaveWebState(req WebSaveRequest) error {
 		return fmt.Errorf("outbound 不存在: %s", req.ActiveOutbound)
 	}
 	cfg.Policy.Default = req.ActiveOutbound
+	cfg.Policy.Overrides = overrides
 	cfg.Policy.DynamicOutbound = dynamicRules
 	if blockers := a.RemovedBackendBlockers(oldCfg, cfg); len(blockers) > 0 {
 		return fmt.Errorf("删除被引用的 backend: %s", strings.Join(blockers, "; "))
@@ -4136,6 +4637,9 @@ func (a *App) CheckRouteTarget(input string) (WebRouteCheckResponse, error) {
 	if err != nil {
 		return WebRouteCheckResponse{}, err
 	}
+	if result, ok := checkOverrideTarget(target, cfg.Policy.Overrides); ok {
+		return result, nil
+	}
 	if result, ok := a.checkDynamicOutboundTarget(target, cfg.Policy.DynamicOutbound); ok {
 		return result, nil
 	}
@@ -4151,11 +4655,6 @@ func (a *App) CheckRouteTarget(input string) (WebRouteCheckResponse, error) {
 	if target.Kind == "domain" && matchesAnyDomainSuffix(target.Domain, []string{"lan", "local", "localhost"}) {
 		return routeCheckResult(target, "direct", "direct", "本地域名直连", "domain_suffix:local", false), nil
 	}
-	if result, ok, err := a.checkDirectGeoTarget(target); err != nil {
-		return WebRouteCheckResponse{}, err
-	} else if ok {
-		return result, nil
-	}
 	if cfg.GeoFiles.AdsBlock && target.Kind == "domain" {
 		if ok, err := a.matchRuleSet("geosite-category-ads-all", target.Domain); err != nil {
 			return WebRouteCheckResponse{}, err
@@ -4164,6 +4663,11 @@ func (a *App) CheckRouteTarget(input string) (WebRouteCheckResponse, error) {
 		}
 	}
 	if result, ok, err := a.checkProxyGeoTarget(target, cfg.GeoFiles.ProxyRuleSets); err != nil {
+		return WebRouteCheckResponse{}, err
+	} else if ok {
+		return result, nil
+	}
+	if result, ok, err := a.checkDirectGeoTarget(target); err != nil {
 		return WebRouteCheckResponse{}, err
 	} else if ok {
 		return result, nil
@@ -4208,6 +4712,21 @@ func parseRouteTarget(input string) (parsedRouteTarget, error) {
 		return parsedRouteTarget{}, fmt.Errorf("目标格式错误: %s", raw)
 	}
 	return parsedRouteTarget{Input: raw, Target: domain, Kind: "domain", Domain: domain}, nil
+}
+
+// checkOverrideTarget 判断目标是否命中静态跳转规则。
+func checkOverrideTarget(target parsedRouteTarget, rules []OverrideRule) (WebRouteCheckResponse, bool) {
+	for _, rule := range rules {
+		if !OverrideEnabled(rule) || !routeTargetMatchesRuleTarget(target, rule.Match) {
+			continue
+		}
+		outbound := SanitizeTag(firstNonEmpty(rule.Outbound, "direct"))
+		reason := fmt.Sprintf("命中静态跳转到 %s:%d", rule.Address, rule.Port)
+		result := routeCheckResult(target, "override", outbound, reason, "override:"+rule.Key, false)
+		result.Notes = append(result.Notes, fmt.Sprintf("目标地址改写为 %s:%d", rule.Address, rule.Port))
+		return result, true
+	}
+	return WebRouteCheckResponse{}, false
 }
 
 // checkDynamicOutboundTarget 判断目标是否命中动态出口规则。
@@ -4453,10 +4972,14 @@ func (a *App) SaveWebSetup(req WebSetupRequest) error {
 }
 
 // ProbeOutboundDelay 使用 sing-box Clash API 探测指定 outbound。
-func (a *App) ProbeOutboundDelay(tag string) (int, error) {
+func (a *App) ProbeOutboundDelay(tag string, probeURL string) (int, error) {
 	cleanTag := SanitizeTag(tag)
 	if cleanTag == "" {
 		return 0, errors.New("outbound tag 为空")
+	}
+	cleanURL, err := NormalizeProbeURL(probeURL)
+	if err != nil {
+		return 0, err
 	}
 	endpoint := url.URL{
 		Scheme: "http",
@@ -4465,7 +4988,7 @@ func (a *App) ProbeOutboundDelay(tag string) (int, error) {
 	}
 	query := endpoint.Query()
 	query.Set("timeout", strconv.Itoa(defaultProbeTimeoutMS))
-	query.Set("url", defaultProbeURL)
+	query.Set("url", cleanURL)
 	endpoint.RawQuery = query.Encode()
 	client := &http.Client{Timeout: time.Duration(defaultProbeTimeoutMS+500) * time.Millisecond}
 	deadline := time.Now().Add(3 * time.Second)
@@ -4481,6 +5004,22 @@ func (a *App) ProbeOutboundDelay(tag string) (int, error) {
 		}
 		time.Sleep(150 * time.Millisecond)
 	}
+}
+
+// NormalizeProbeURL 清洗 Web 临时探测 URL，空值回退默认地址。
+func NormalizeProbeURL(raw string) (string, error) {
+	clean := strings.TrimSpace(raw)
+	if clean == "" {
+		return defaultProbeURL, nil
+	}
+	parsed, err := url.Parse(clean)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", errors.New("探测目标 URL 格式错误")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", errors.New("探测目标 URL 只支持 http 或 https")
+	}
+	return clean, nil
 }
 
 // ClashSelectorNow 读取 selector 当前出口，适用于展示缓存恢复的临时出口。
@@ -4528,7 +5067,7 @@ func fetchClashDelay(client *http.Client, endpoint string) (int, error) {
 	return data.Delay, nil
 }
 
-// WebBackendExists 判断指定 tag 是否来自静态、订阅或动态组节点。
+// WebBackendExists 判断指定 tag 是否来自静态、订阅、导入或动态组节点。
 func (a *App) WebBackendExists(cfg Config, tag string) bool {
 	for _, item := range cfg.Backend.Static {
 		NormalizeBackendIdentity(&item)
@@ -4549,6 +5088,19 @@ func (a *App) WebBackendExists(cfg Config, tag string) bool {
 			}
 		}
 	}
+	for _, item := range cfg.Backend.Imports {
+		nodes, err := a.LoadSubscriptionCache(item.Key)
+		if err != nil {
+			continue
+		}
+		MakeUniqueBackendKeys(nodes)
+		for _, node := range nodes {
+			node.SetBackendTag(RuntimeBackendTag("import-"+item.Key, node.BackendKey()))
+			if node.BackendTag() == tag {
+				return true
+			}
+		}
+	}
 	for _, group := range cfg.Backend.Groups {
 		if RuntimeBackendTag("group", group.Key) == tag && len(group.Members) > 0 {
 			return true
@@ -4564,6 +5116,7 @@ func (a *App) ConfigWarnings(cfg Config) []string {
 		warnings = append(warnings, "当前出口不存在: "+cfg.Policy.Default)
 	}
 	refs := a.AvailableMemberRefs(cfg)
+	detourRefs := a.AvailableDetourRefs(cfg)
 	for _, group := range cfg.Backend.Groups {
 		for _, member := range group.Members {
 			if !refs[member] {
@@ -4572,6 +5125,12 @@ func (a *App) ConfigWarnings(cfg Config) []string {
 		}
 		if group.Primary != "" && !refs[group.Primary] {
 			warnings = append(warnings, fmt.Sprintf("动态组 %s 主节点不存在: %s", group.Key, group.Primary))
+		}
+	}
+	for _, node := range cfg.Backend.Static {
+		detour := strings.TrimSpace(node.Detour)
+		if detour != "" && !detourRefs[detour] {
+			warnings = append(warnings, fmt.Sprintf("静态节点 %s detour 不存在: %s", node.Key, detour))
 		}
 	}
 	for _, rule := range cfg.Policy.DynamicOutbound {
@@ -4610,6 +5169,26 @@ func (a *App) RemovedBackendBlockers(before Config, final Config) []string {
 		removedTags = append(removedTags, a.subscriptionBackendTags(sub.Key)...)
 		removedRefs = append(removedRefs, a.subscriptionMemberRefs(sub.Key)...)
 	}
+	for _, item := range before.Backend.Imports {
+		if findImportedGroupIndex(final.Backend.Imports, item.Key) >= 0 {
+			continue
+		}
+		removedTags = append(removedTags, a.importBackendTags(item.Key)...)
+		removedRefs = append(removedRefs, a.importMemberRefs(item.Key)...)
+	}
+	for _, group := range before.Backend.Groups {
+		exists := false
+		for _, next := range final.Backend.Groups {
+			if next.Key == group.Key {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			removedTags = append(removedTags, RuntimeBackendTag("group", group.Key))
+			removedRefs = append(removedRefs, "group."+group.Key)
+		}
+	}
 	return backendReferenceBlockers(final, removedTags, removedRefs)
 }
 
@@ -4641,6 +5220,34 @@ func (a *App) subscriptionMemberRefs(subKey string) []string {
 	return refs
 }
 
+// importBackendTags 返回指定导入缓存中的运行时 outbound tag。
+func (a *App) importBackendTags(groupKey string) []string {
+	nodes, err := a.LoadSubscriptionCache(groupKey)
+	if err != nil {
+		return nil
+	}
+	MakeUniqueBackendKeys(nodes)
+	tags := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		tags = append(tags, RuntimeBackendTag("import-"+groupKey, node.BackendKey()))
+	}
+	return tags
+}
+
+// importMemberRefs 返回指定导入缓存中的动态组成员引用。
+func (a *App) importMemberRefs(groupKey string) []string {
+	nodes, err := a.LoadSubscriptionCache(groupKey)
+	if err != nil {
+		return nil
+	}
+	MakeUniqueBackendKeys(nodes)
+	refs := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		refs = append(refs, "import."+groupKey+"."+node.BackendKey())
+	}
+	return refs
+}
+
 // backendReferenceBlockers 汇总被删除节点仍被哪些配置引用。
 func backendReferenceBlockers(cfg Config, tags []string, refs []string) []string {
 	tagSet := stringSet(tags)
@@ -4662,6 +5269,11 @@ func backendReferenceBlockers(cfg Config, tags []string, refs []string) []string
 	for _, rule := range cfg.Policy.DynamicOutbound {
 		if tagSet[rule.Outbound] {
 			blockers = append(blockers, fmt.Sprintf("动态出口 %s -> %s", rule.Match, rule.Outbound))
+		}
+	}
+	for _, node := range cfg.Backend.Static {
+		if refSet[strings.TrimSpace(node.Detour)] {
+			blockers = append(blockers, fmt.Sprintf("静态节点 %s detour %s", node.Key, node.Detour))
 		}
 	}
 	return blockers
@@ -4713,6 +5325,145 @@ func (a *App) NormalizeDynamicOutboundRules(cfg Config, rules []DynamicOutboundR
 	return result, nil
 }
 
+// NormalizeOverrideRules 校验并清洗 Web 提交的静态跳转规则。
+func NormalizeOverrideRules(rules []OverrideRule) ([]OverrideRule, error) {
+	result := make([]OverrideRule, 0, len(rules))
+	seenKey := map[string]bool{}
+	seenMatch := map[string]bool{}
+	for index, rule := range rules {
+		key := SanitizeTag(rule.Key)
+		match := strings.TrimSpace(rule.Match)
+		address := strings.TrimSpace(rule.Address)
+		outbound := SanitizeTag(firstNonEmpty(rule.Outbound, "direct"))
+		empty := key == "" && match == "" && address == "" && rule.Port == 0
+		if empty {
+			continue
+		}
+		if key == "" {
+			key = fmt.Sprintf("override-%d", index+1)
+		}
+		if match == "" || address == "" || rule.Port <= 0 {
+			return nil, errors.New("静态跳转规则必须填写匹配条件、目标地址和端口")
+		}
+		if seenKey[key] {
+			return nil, fmt.Errorf("静态跳转 key 重复: %s", key)
+		}
+		seenKey[key] = true
+		enabled := OverrideEnabled(rule)
+		if _, err := BuildOverrideRouteRule(OverrideRule{
+			Key:      key,
+			Match:    match,
+			Address:  address,
+			Port:     rule.Port,
+			Outbound: outbound,
+			Enabled:  boolPtr(enabled),
+		}); err != nil {
+			return nil, err
+		}
+		matchKey := strings.ToLower(match)
+		if seenMatch[matchKey] {
+			return nil, fmt.Errorf("静态跳转匹配重复: %s", match)
+		}
+		seenMatch[matchKey] = true
+		result = append(result, OverrideRule{
+			Key:      key,
+			Match:    match,
+			Address:  address,
+			Port:     rule.Port,
+			Outbound: outbound,
+			Enabled:  boolPtr(enabled),
+		})
+	}
+	return result, nil
+}
+
+// OverrideEnabled 返回静态跳转规则是否启用，缺省时按启用处理。
+func OverrideEnabled(rule OverrideRule) bool {
+	return rule.Enabled == nil || *rule.Enabled
+}
+
+// ValidateStaticDetours 校验静态节点链式拨号引用。
+func (a *App) ValidateStaticDetours(cfg Config) error {
+	refs := a.AvailableDetourRefs(cfg)
+	edges := map[string][]string{}
+	for _, node := range cfg.Backend.Static {
+		key := SanitizeTag(node.Key)
+		ref := "static." + key
+		detour := strings.TrimSpace(node.Detour)
+		if detour == "" {
+			continue
+		}
+		if detour == ref {
+			return fmt.Errorf("静态节点 %s 不能 detour 到自己", key)
+		}
+		if !refs[detour] {
+			return fmt.Errorf("静态节点 %s detour 不存在: %s", key, detour)
+		}
+		edges[ref] = []string{detour}
+	}
+	for _, group := range cfg.Backend.Groups {
+		key := SanitizeTag(group.Key)
+		if key == "" {
+			continue
+		}
+		edges["group."+key] = append([]string(nil), group.Members...)
+	}
+	// 触发条件：静态节点之间互相 detour，或 detour 到包含自己的动态组。
+	// 不能只检查直接自引用，因为 group 会把链式关系隐藏一层。
+	// 防止保存出 sing-box 无法稳定拨号的环形出站链路。
+	if path := firstDetourCycle(edges); len(path) > 0 {
+		return fmt.Errorf("静态节点 detour 存在循环: %s", strings.Join(path, " -> "))
+	}
+	return nil
+}
+
+// firstDetourCycle 查找静态 detour 和动态组成员构成的首个循环。
+func firstDetourCycle(edges map[string][]string) []string {
+	state := map[string]int{}
+	stack := []string{}
+	stackIndex := map[string]int{}
+	var visit func(string) []string
+	visit = func(node string) []string {
+		if state[node] == 1 {
+			start := stackIndex[node]
+			return append(append([]string(nil), stack[start:]...), node)
+		}
+		if state[node] == 2 {
+			return nil
+		}
+		state[node] = 1
+		stackIndex[node] = len(stack)
+		stack = append(stack, node)
+		for _, next := range edges[node] {
+			if cycle := visit(next); len(cycle) > 0 {
+				return cycle
+			}
+		}
+		stack = stack[:len(stack)-1]
+		delete(stackIndex, node)
+		state[node] = 2
+		return nil
+	}
+	for node := range edges {
+		if cycle := visit(node); len(cycle) > 0 {
+			return cycle
+		}
+	}
+	return nil
+}
+
+// AvailableDetourRefs 返回静态节点 detour 可引用的真实节点和动态组。
+func (a *App) AvailableDetourRefs(cfg Config) map[string]bool {
+	refs := a.AvailableMemberRefs(cfg)
+	for _, group := range cfg.Backend.Groups {
+		key := SanitizeTag(group.Key)
+		if key != "" && len(group.Members) > 0 {
+			refs["group."+key] = true
+		}
+	}
+	return refs
+}
+
 // AvailableMemberRefs 返回可被动态组引用的真实节点链路 key。
 func (a *App) AvailableMemberRefs(cfg Config) map[string]bool {
 	refs := map[string]bool{}
@@ -4728,6 +5479,16 @@ func (a *App) AvailableMemberRefs(cfg Config) map[string]bool {
 		MakeUniqueBackendKeys(nodes)
 		for _, node := range nodes {
 			refs["sub."+sub.Key+"."+node.BackendKey()] = true
+		}
+	}
+	for _, group := range cfg.Backend.Imports {
+		nodes, err := a.LoadSubscriptionCache(group.Key)
+		if err != nil {
+			continue
+		}
+		MakeUniqueBackendKeys(nodes)
+		for _, node := range nodes {
+			refs["import."+group.Key+"."+node.BackendKey()] = true
 		}
 	}
 	return refs
@@ -4813,6 +5574,10 @@ func normalizeStaticProtocol(protocol string) string {
 		return staticProtocolTrojan
 	case staticProtocolAnyTLS:
 		return staticProtocolAnyTLS
+	case staticProtocolSocks, "socks5":
+		return staticProtocolSocks
+	case staticProtocolHTTP:
+		return staticProtocolHTTP
 	default:
 		return staticProtocolHY2
 	}
@@ -4844,6 +5609,7 @@ func NormalizeStaticBackendsForSave(nodes []StaticBackend) ([]StaticBackend, err
 			Name:     strings.TrimSpace(node.Name),
 			Server:   strings.TrimSpace(node.Server),
 			Port:     node.Port,
+			Detour:   strings.TrimSpace(node.Detour),
 		}
 		switch node.Protocol {
 		case staticProtocolVMess:
@@ -4891,6 +5657,12 @@ func NormalizeStaticBackendsForSave(nodes []StaticBackend) ([]StaticBackend, err
 			clean.IdleSessionCheckInterval = strings.TrimSpace(node.IdleSessionCheckInterval)
 			clean.IdleSessionTimeout = strings.TrimSpace(node.IdleSessionTimeout)
 			clean.MinIdleSession = node.MinIdleSession
+		case staticProtocolSocks:
+			clean.Username = strings.TrimSpace(node.Username)
+			clean.Password = strings.TrimSpace(node.Password)
+		case staticProtocolHTTP:
+			clean.Username = strings.TrimSpace(node.Username)
+			clean.Password = strings.TrimSpace(node.Password)
 		default:
 			if strings.TrimSpace(node.Password) == "" {
 				return nil, fmt.Errorf("静态节点 %s password 为空", node.Key)
@@ -4934,6 +5706,45 @@ func NormalizeSubscriptionsForSave(subscriptions []Subscription) ([]Subscription
 	return result, nil
 }
 
+// NormalizeImportedGroupsForSave 校验并清洗 Web 提交的导入来源配置。
+func NormalizeImportedGroupsForSave(groups []ImportedNodeGroup) ([]ImportedNodeGroup, error) {
+	seen := map[string]bool{}
+	result := make([]ImportedNodeGroup, 0, len(groups))
+	for i, group := range groups {
+		group.Key = SanitizeTag(firstNonEmpty(group.Key, group.Name))
+		if group.Key == "" {
+			return nil, fmt.Errorf("导入分组第 %d 个 key 为空", i+1)
+		}
+		if seen[group.Key] {
+			return nil, fmt.Errorf("导入分组 key 重复: %s", group.Key)
+		}
+		if strings.TrimSpace(group.Name) == "" {
+			group.Name = group.Key
+		}
+		group.Source = normalizeImportSource(group.Source)
+		if group.Source == "" {
+			return nil, fmt.Errorf("导入分组 %s source 不支持", group.Key)
+		}
+		seen[group.Key] = true
+		result = append(result, ImportedNodeGroup{
+			Key:    group.Key,
+			Name:   strings.TrimSpace(group.Name),
+			Source: group.Source,
+		})
+	}
+	return result, nil
+}
+
+// normalizeImportSource 规范化手动导入来源类型。
+func normalizeImportSource(source string) string {
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case "clash":
+		return "clash"
+	default:
+		return ""
+	}
+}
+
 // WebBackendFromBackend 将运行时节点转为前端节点对象。
 func WebBackendFromBackend(node ProxyBackend, source string) WebBackend {
 	tag := SanitizeTag(node.BackendTag())
@@ -4951,6 +5762,7 @@ func WebBackendFromBackend(node ProxyBackend, source string) WebBackend {
 	}
 	if source == "static" {
 		if staticNode, ok := node.(*StaticBackend); ok {
+			item.Username = staticNode.Username
 			item.Password = staticNode.Password
 			item.SNI = staticNode.SNI
 			item.Insecure = staticNode.Insecure
@@ -4968,6 +5780,7 @@ func WebBackendFromBackend(node ProxyBackend, source string) WebBackend {
 			item.IdleSessionCheckInterval = staticNode.IdleSessionCheckInterval
 			item.IdleSessionTimeout = staticNode.IdleSessionTimeout
 			item.MinIdleSession = staticNode.MinIdleSession
+			item.Detour = staticNode.Detour
 		}
 	}
 	return item
@@ -4996,8 +5809,12 @@ func webProtocolRank(protocol string) int {
 		return 2
 	case "anytls":
 		return 3
-	case "ss":
+	case "socks":
 		return 4
+	case "http":
+		return 5
+	case "ss":
+		return 6
 	default:
 		return 9
 	}
@@ -5534,9 +6351,9 @@ func singBoxPIDsFromProc(procDir string, selfPID int) ([]int, error) {
 }
 
 // firstConfiguredOutbound 计算配置中的第一个可用节点。
-func firstConfiguredOutbound(cfg Config, static []WebBackend, subscriptions []WebSubscription, groups []WebDynamicGroup) string {
+func firstConfiguredOutbound(cfg Config, static []WebBackend, subscriptions []WebSubscription, imports []WebImportedGroup, groups []WebDynamicGroup) string {
 	if active := configuredActiveOutbound(cfg); active != "" {
-		if tag := matchWebBackend(active, static, subscriptions, groups); tag != "" {
+		if tag := matchWebBackend(active, static, subscriptions, imports, groups); tag != "" {
 			return tag
 		}
 	}
@@ -5548,6 +6365,11 @@ func firstConfiguredOutbound(cfg Config, static []WebBackend, subscriptions []We
 			return sub.Nodes[0].Tag
 		}
 	}
+	for _, group := range imports {
+		if len(group.Nodes) > 0 {
+			return group.Nodes[0].Tag
+		}
+	}
 	for _, group := range groups {
 		if len(group.Members) > 0 {
 			return group.Tag
@@ -5557,7 +6379,7 @@ func firstConfiguredOutbound(cfg Config, static []WebBackend, subscriptions []We
 }
 
 // matchWebBackend 将旧 key/name/default 映射到当前运行时 tag。
-func matchWebBackend(value string, static []WebBackend, subscriptions []WebSubscription, groups []WebDynamicGroup) string {
+func matchWebBackend(value string, static []WebBackend, subscriptions []WebSubscription, imports []WebImportedGroup, groups []WebDynamicGroup) string {
 	want := SanitizeTag(value)
 	for _, group := range groups {
 		if group.Tag == value {
@@ -5576,6 +6398,13 @@ func matchWebBackend(value string, static []WebBackend, subscriptions []WebSubsc
 			}
 		}
 	}
+	for _, group := range imports {
+		for _, node := range group.Nodes {
+			if node.Tag == value {
+				return node.Tag
+			}
+		}
+	}
 	for _, node := range static {
 		if node.Key == want || SanitizeTag(node.Name) == want {
 			return node.Tag
@@ -5583,6 +6412,13 @@ func matchWebBackend(value string, static []WebBackend, subscriptions []WebSubsc
 	}
 	for _, sub := range subscriptions {
 		for _, node := range sub.Nodes {
+			if node.Key == want || SanitizeTag(node.Name) == want {
+				return node.Tag
+			}
+		}
+	}
+	for _, group := range imports {
+		for _, node := range group.Nodes {
 			if node.Key == want || SanitizeTag(node.Name) == want {
 				return node.Tag
 			}
@@ -5674,6 +6510,16 @@ func findSubscriptionIndex(subscriptions []Subscription, name string) int {
 	return -1
 }
 
+// findImportedGroupIndex 返回导入来源配置下标。
+func findImportedGroupIndex(groups []ImportedNodeGroup, key string) int {
+	for i, group := range groups {
+		if group.Key == key {
+			return i
+		}
+	}
+	return -1
+}
+
 // BuildSingBoxConfig 构造 sing-box JSON 对象。
 func (a *App) BuildSingBoxConfig(cfg Config, backends []ProxyBackend, directRules []LocalRule, proxyRules []LocalRule, dynamicRules []DynamicOutboundRule) (map[string]any, error) {
 	if len(backends) == 0 {
@@ -5700,9 +6546,28 @@ func (a *App) BuildSingBoxConfig(cfg Config, backends []ProxyBackend, directRule
 	routeRules = append(routeRules,
 		map[string]any{"action": "sniff"},
 		map[string]any{"protocol": "dns", "action": "hijack-dns"},
-		map[string]any{"network": "icmp", "action": "route", "outbound": "direct"},
 	)
+	if HostsOverrideEnabled(cfg) {
+		hostsResolveRule, err := BuildHostsResolveRouteRule(defaultHostsPath)
+		if err != nil {
+			return nil, err
+		}
+		if hostsResolveRule != nil {
+			routeRules = append(routeRules, hostsResolveRule)
+		}
+	}
+	routeRules = append(routeRules, map[string]any{"network": "icmp", "action": "route", "outbound": "direct"})
 	routeRules = append(routeRules, BuildTailscaleDirectRouteRules()...)
+	for _, rule := range cfg.Policy.Overrides {
+		if !OverrideEnabled(rule) {
+			continue
+		}
+		routeRule, err := BuildOverrideRouteRule(rule)
+		if err != nil {
+			return nil, err
+		}
+		routeRules = append(routeRules, routeRule)
+	}
 	for _, rule := range dynamicRules {
 		routeRule, err := BuildDynamicOutboundRouteRule(rule)
 		if err != nil {
@@ -5720,7 +6585,6 @@ func (a *App) BuildSingBoxConfig(cfg Config, backends []ProxyBackend, directRule
 		map[string]any{"ip_is_private": true, "action": "route", "outbound": "direct"},
 		map[string]any{"domain_suffix": []string{".lan", ".local", ".localhost"}, "action": "route", "outbound": "direct"},
 		map[string]any{"rule_set": []string{"geoip-private", "geosite-private"}, "action": "route", "outbound": "direct"},
-		map[string]any{"rule_set": []string{"geoip-cn", "geosite-cn", "geosite-geolocation-cn"}, "action": "route", "outbound": "direct"},
 	)
 	if cfg.GeoFiles.AdsBlock {
 		routeRules = append(routeRules, map[string]any{"rule_set": []string{"geosite-category-ads-all"}, "action": "reject", "method": "default"})
@@ -5728,6 +6592,10 @@ func (a *App) BuildSingBoxConfig(cfg Config, backends []ProxyBackend, directRule
 	if len(cfg.GeoFiles.ProxyRuleSets) > 0 {
 		routeRules = append(routeRules, map[string]any{"rule_set": cfg.GeoFiles.ProxyRuleSets, "action": "route", "outbound": routeProxyOutbound})
 	}
+	// 触发条件：同一域名同时存在于 geosite-google 与 geolocation-cn。
+	// 不能先套 CN 直连规则，否则 Google 依赖域名会被直连超时。
+	// 防止用户启用的代理规则被内置直连规则覆盖。
+	routeRules = append(routeRules, map[string]any{"rule_set": []string{"geoip-cn", "geosite-cn", "geosite-geolocation-cn"}, "action": "route", "outbound": "direct"})
 	dnsRules := []map[string]any{
 		{"rule_set": []string{"geosite-cn", "geosite-private"}, "server": "direct-dns"},
 		{"query_type": []int{64, 65}, "action": "predefined", "rcode": "NOERROR"},
@@ -5808,6 +6676,69 @@ func HostsOverrideEnabled(cfg Config) bool {
 	return cfg.GeoFiles.HostsOverride == nil || *cfg.GeoFiles.HostsOverride
 }
 
+// BuildHostsResolveRouteRule 构造 hosts 域名路由解析规则。
+func BuildHostsResolveRouteRule(path string) (map[string]any, error) {
+	domains, err := ParseHostsDomainsFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(domains) == 0 {
+		return nil, nil
+	}
+	return map[string]any{
+		"action": "resolve",
+		"domain": domains,
+		"server": defaultHostsDNSTag,
+	}, nil
+}
+
+// ParseHostsDomainsFile 读取 hosts 文件中的域名，适用于路由阶段解析。
+func ParseHostsDomainsFile(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+	return ParseHostsDomains(f)
+}
+
+// ParseHostsDomains 解析 hosts 内容，返回可用于 sing-box route domain 的域名。
+func ParseHostsDomains(r io.Reader) ([]string, error) {
+	scanner := bufio.NewScanner(r)
+	seen := make(map[string]bool)
+	var domains []string
+	for scanner.Scan() {
+		line := stripHostsComment(scanner.Text())
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		if _, err := netip.ParseAddr(fields[0]); err != nil {
+			continue
+		}
+		for _, field := range fields[1:] {
+			domain := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(field), "."))
+			if domain == "" || seen[domain] || strings.ContainsAny(domain, " /") {
+				continue
+			}
+			seen[domain] = true
+			domains = append(domains, domain)
+		}
+	}
+	return domains, scanner.Err()
+}
+
+// stripHostsComment 移除 hosts 行内注释。
+func stripHostsComment(line string) string {
+	if idx := strings.Index(line, "#"); idx >= 0 {
+		return line[:idx]
+	}
+	return line
+}
+
 // BuildNoFakeIPFilterRule 构造系统探测域名的 FakeIP 排除规则。
 func BuildNoFakeIPFilterRule() map[string]any {
 	return map[string]any{
@@ -5859,17 +6790,21 @@ func BuildInbounds(cfg InboundConfig) []map[string]any {
 		}
 		return []map[string]any{inbound}
 	}
+	inbound := map[string]any{
+		"type":           "tun",
+		"tag":            "tun-in",
+		"interface_name": "sbox0",
+		"address":        []string{"172.19.0.1/30"},
+		"auto_route":     true,
+		"auto_redirect":  true,
+		"strict_route":   true,
+		"stack":          "mixed",
+	}
+	if len(cfg.Tun.RouteExcludeAddress) > 0 {
+		inbound["route_exclude_address"] = append([]string(nil), cfg.Tun.RouteExcludeAddress...)
+	}
 	return []map[string]any{
-		{
-			"type":           "tun",
-			"tag":            "tun-in",
-			"interface_name": "sbox0",
-			"address":        []string{"172.19.0.1/30"},
-			"auto_route":     true,
-			"auto_redirect":  true,
-			"strict_route":   true,
-			"stack":          "mixed",
-		},
+		inbound,
 	}
 }
 
@@ -6026,6 +6961,41 @@ func BuildAnyTLSOutbound(b AnyTLSBackend) map[string]any {
 	return out
 }
 
+// BuildSocksOutbound 构造 sing-box socks outbound。
+func BuildSocksOutbound(b SocksBackend) map[string]any {
+	out := map[string]any{
+		"type":        "socks",
+		"tag":         b.Tag,
+		"server":      b.Server,
+		"server_port": b.Port,
+		"version":     "5",
+	}
+	if strings.TrimSpace(b.Username) != "" {
+		out["username"] = strings.TrimSpace(b.Username)
+	}
+	if strings.TrimSpace(b.Password) != "" {
+		out["password"] = strings.TrimSpace(b.Password)
+	}
+	return out
+}
+
+// BuildHTTPOutbound 构造 sing-box http outbound。
+func BuildHTTPOutbound(b HTTPBackend) map[string]any {
+	out := map[string]any{
+		"type":        "http",
+		"tag":         b.Tag,
+		"server":      b.Server,
+		"server_port": b.Port,
+	}
+	if strings.TrimSpace(b.Username) != "" {
+		out["username"] = strings.TrimSpace(b.Username)
+	}
+	if strings.TrimSpace(b.Password) != "" {
+		out["password"] = strings.TrimSpace(b.Password)
+	}
+	return out
+}
+
 // BuildDynamicGroupOutbound 构造动态组 selector outbound。
 func BuildDynamicGroupOutbound(b DynamicGroupBackend) map[string]any {
 	out := map[string]any{
@@ -6146,26 +7116,70 @@ func BuildDynamicOutboundRouteRule(rule DynamicOutboundRule) (map[string]any, er
 		return nil, errors.New("动态出口规则缺少匹配条件或出口")
 	}
 	m := map[string]any{"action": "route", "outbound": DynamicOutboundSelectorTag(rule)}
+	if err := applyRouteMatch(m, match, "动态出口"); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// BuildOverrideRouteRule 将静态跳转规则转成 sing-box 目标改写路由规则。
+func BuildOverrideRouteRule(rule OverrideRule) (map[string]any, error) {
+	match := strings.TrimSpace(rule.Match)
+	address := strings.TrimSpace(rule.Address)
+	outbound := SanitizeTag(firstNonEmpty(rule.Outbound, "direct"))
+	if match == "" || address == "" || rule.Port <= 0 {
+		return nil, errors.New("静态跳转规则缺少匹配条件、目标地址或端口")
+	}
+	if rule.Port > 65535 {
+		return nil, fmt.Errorf("静态跳转端口超出范围: %d", rule.Port)
+	}
+	if outbound != "direct" {
+		// 触发条件：用户手写配置把静态跳转指向代理 backend。
+		// 不能允许保存后静默失败，因为 sing-box 目标改写只适合 direct 路径。
+		// 防止 UI 显示已生效但实际仍走原目标或代理链路。
+		return nil, fmt.Errorf("静态跳转 outbound 只支持 direct: %s", outbound)
+	}
+	if strings.ContainsAny(address, " \t/") {
+		return nil, fmt.Errorf("静态跳转地址格式错误: %s", address)
+	}
+	m := map[string]any{
+		"action":           "route",
+		"outbound":         "direct",
+		"override_address": address,
+		"override_port":    rule.Port,
+	}
+	if err := applyRouteMatch(m, match, "静态跳转"); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// applyRouteMatch 将域名或 IP/CIDR 匹配条件写入 sing-box 路由规则。
+func applyRouteMatch(m map[string]any, match string, label string) error {
+	match = strings.TrimSpace(match)
 	if strings.HasPrefix(strings.ToLower(match), "domain:") {
 		domain := strings.TrimPrefix(strings.TrimSpace(match[len("domain:"):]), ".")
 		if domain == "" {
-			return nil, fmt.Errorf("动态出口域名为空: %s", match)
+			return fmt.Errorf("%s域名为空: %s", label, match)
 		}
 		m["domain"] = []string{domain}
 		m["domain_suffix"] = []string{"." + domain}
-		return m, nil
+		return nil
 	}
 	if looksLikeIPOrCIDR(match) {
 		m["ip_cidr"] = []string{NormalizeCIDR(match)}
-		return m, nil
+		return nil
 	}
 	if strings.ContainsAny(match, " \t/") {
-		return nil, fmt.Errorf("动态出口只支持域名或 IP/CIDR: %s", match)
+		return fmt.Errorf("%s只支持域名或 IP/CIDR: %s", label, match)
 	}
 	domain := strings.TrimPrefix(match, ".")
+	if domain == "" {
+		return fmt.Errorf("%s域名为空: %s", label, match)
+	}
 	m["domain"] = []string{domain}
 	m["domain_suffix"] = []string{"." + domain}
-	return m, nil
+	return nil
 }
 
 // looksLikeIPOrCIDR 判断文本是否为 IP 或 CIDR。
@@ -6260,6 +7274,15 @@ func MergeConfigDefaults(cfg *Config) {
 			cfg.Backend.Subscription[i].UserAgent = defaultSubscriptionUA
 		}
 	}
+	seenImports := map[string]int{}
+	for i := range cfg.Backend.Imports {
+		key := SanitizeTag(firstNonEmpty(cfg.Backend.Imports[i].Key, cfg.Backend.Imports[i].Name))
+		cfg.Backend.Imports[i].Key = UniqueScopedKey(key, seenImports, fmt.Sprintf("import-%d", i+1))
+		if cfg.Backend.Imports[i].Name == "" {
+			cfg.Backend.Imports[i].Name = cfg.Backend.Imports[i].Key
+		}
+		cfg.Backend.Imports[i].Source = normalizeImportSource(cfg.Backend.Imports[i].Source)
+	}
 	cfg.Backend.Groups = NormalizeDynamicGroups(cfg.Backend.Groups, nil)
 }
 
@@ -6300,7 +7323,7 @@ func ParseLocalRules(r io.Reader) ([]LocalRule, error) {
 	return rules, scanner.Err()
 }
 
-// FetchSubscription 下载并解析订阅，只保留 HY2、VMess、SS、Trojan 和 AnyTLS。
+// FetchSubscription 下载并解析订阅，只保留 HY2、VMess、SS、Trojan、AnyTLS、SOCKS5 和 HTTP。
 func FetchSubscription(client *http.Client, sub Subscription) ([]ProxyBackend, int, int, error) {
 	req, err := http.NewRequest(http.MethodGet, sub.URL, nil)
 	if err != nil {
@@ -6374,6 +7397,24 @@ func FetchSubscription(client *http.Client, sub Subscription) ([]ProxyBackend, i
 			nodes = append(nodes, node)
 			continue
 		}
+		if strings.HasPrefix(line, "socks5://") || strings.HasPrefix(line, "socks://") {
+			node, err := ParseSocksURI(line)
+			if err != nil {
+				failed++
+				continue
+			}
+			nodes = append(nodes, node)
+			continue
+		}
+		if strings.HasPrefix(line, "http://") {
+			node, err := ParseHTTPProxyURI(line)
+			if err != nil {
+				failed++
+				continue
+			}
+			nodes = append(nodes, node)
+			continue
+		}
 		if strings.Contains(line, "://") {
 			skipped++
 			continue
@@ -6382,6 +7423,337 @@ func FetchSubscription(client *http.Client, sub Subscription) ([]ProxyBackend, i
 	}
 	SortBackendsByProtocol(nodes)
 	return nodes, skipped, failed, nil
+}
+
+// ImportNodeGroup 保存一次手动导入，key 相同会替换配置和缓存。
+func (a *App) ImportNodeGroup(req WebImportRequest) (WebImportResponse, error) {
+	key := SanitizeTag(firstNonEmpty(req.Key, req.Name))
+	if key == "" {
+		return WebImportResponse{}, errors.New("导入分组 key 不能为空")
+	}
+	source := normalizeImportSource(req.Source)
+	if source == "" {
+		return WebImportResponse{}, fmt.Errorf("导入 source 不支持: %s", req.Source)
+	}
+	if strings.TrimSpace(req.Content) == "" {
+		return WebImportResponse{}, errors.New("导入内容不能为空")
+	}
+	nodes, skipped, failed, err := ParseImportedNodes(source, []byte(req.Content))
+	if err != nil {
+		return WebImportResponse{}, err
+	}
+	if len(nodes) == 0 {
+		return WebImportResponse{}, fmt.Errorf("导入内容没有可用节点，skipped=%d failed=%d", skipped, failed)
+	}
+	MakeUniqueBackendKeys(nodes)
+	if _, err := a.SaveSubscriptionCache(key, nodes); err != nil {
+		return WebImportResponse{}, err
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return WebImportResponse{}, err
+	}
+	nextGroup := ImportedNodeGroup{
+		Key:    key,
+		Name:   firstNonEmpty(strings.TrimSpace(req.Name), key),
+		Source: source,
+	}
+	if index := findImportedGroupIndex(cfg.Backend.Imports, key); index >= 0 {
+		cfg.Backend.Imports[index] = nextGroup
+	} else {
+		cfg.Backend.Imports = append(cfg.Backend.Imports, nextGroup)
+	}
+	if cfg.Policy.Default == "" && len(nodes) > 0 {
+		cfg.Policy.Default = RuntimeBackendTag("import-"+key, nodes[0].BackendKey())
+	}
+	if err := SaveConfig(a.ConfigPath, cfg); err != nil {
+		return WebImportResponse{}, err
+	}
+	return WebImportResponse{Imported: len(nodes), Skipped: skipped, Failed: failed}, nil
+}
+
+// ParseImportedNodes 按来源格式解析手动导入节点。
+func ParseImportedNodes(source string, data []byte) ([]ProxyBackend, int, int, error) {
+	switch normalizeImportSource(source) {
+	case "clash":
+		return ParseClashProxyNodes(data)
+	default:
+		return nil, 0, 0, fmt.Errorf("导入 source 不支持: %s", source)
+	}
+}
+
+// ParseClashProxyNodes 解析 Clash YAML proxies 字段并按端点去重。
+func ParseClashProxyNodes(data []byte) ([]ProxyBackend, int, int, error) {
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return nil, 0, 0, err
+	}
+	proxies := clashProxySequenceNode(&root)
+	if proxies == nil {
+		return nil, 0, 0, errors.New("Clash 配置缺少 proxies")
+	}
+	skipped := 0
+	failed := 0
+	backendByEndpoint := map[string]ProxyBackend{}
+	indexByEndpoint := map[string]int{}
+	order := make([]string, 0, len(proxies.Content))
+	for index, item := range proxies.Content {
+		values := yamlMappingValues(item)
+		if len(values) == 0 {
+			failed++
+			continue
+		}
+		node, ok, err := clashProxyBackend(values)
+		if err != nil {
+			failed++
+			continue
+		}
+		if !ok {
+			skipped++
+			continue
+		}
+		endpoint := clashProxyEndpointKey(node)
+		if endpoint == "" {
+			failed++
+			continue
+		}
+		if _, exists := backendByEndpoint[endpoint]; !exists {
+			order = append(order, endpoint)
+		}
+		backendByEndpoint[endpoint] = node
+		indexByEndpoint[endpoint] = index
+	}
+	nodes := make([]ProxyBackend, 0, len(backendByEndpoint))
+	sort.SliceStable(order, func(i, j int) bool {
+		return indexByEndpoint[order[i]] < indexByEndpoint[order[j]]
+	})
+	for _, endpoint := range order {
+		nodes = append(nodes, backendByEndpoint[endpoint])
+	}
+	MakeUniqueBackendKeys(nodes)
+	return nodes, skipped, failed, nil
+}
+
+// clashProxySequenceNode 返回 Clash 根对象中的 proxies sequence。
+func clashProxySequenceNode(root *yaml.Node) *yaml.Node {
+	node := root
+	if node != nil && node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
+		node = node.Content[0]
+	}
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == "proxies" && node.Content[i+1].Kind == yaml.SequenceNode {
+			return node.Content[i+1]
+		}
+	}
+	return nil
+}
+
+// yamlMappingValues 将 YAML mapping 转成按 key 读取的节点表。
+func yamlMappingValues(node *yaml.Node) map[string]*yaml.Node {
+	result := map[string]*yaml.Node{}
+	if node == nil || node.Kind != yaml.MappingNode {
+		return result
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := strings.ToLower(strings.TrimSpace(node.Content[i].Value))
+		if key == "" {
+			continue
+		}
+		result[key] = node.Content[i+1]
+	}
+	return result
+}
+
+// clashProxyBackend 将一个 Clash proxy mapping 转成内部节点。
+func clashProxyBackend(values map[string]*yaml.Node) (ProxyBackend, bool, error) {
+	protocol := strings.ToLower(strings.TrimSpace(yamlString(values["type"])))
+	server := strings.TrimSpace(yamlString(values["server"]))
+	port := yamlInt(values["port"])
+	if protocol == "" || server == "" || port <= 0 || port > 65535 {
+		return nil, false, fmt.Errorf("Clash proxy 缺少 type/server/port")
+	}
+	name := strings.TrimSpace(yamlString(values["name"]))
+	key := SanitizeTag(firstNonEmpty(name, server))
+	switch protocol {
+	case "hysteria2", "hy2":
+		password := strings.TrimSpace(yamlString(values["password"]))
+		if password == "" {
+			return nil, false, fmt.Errorf("HY2 proxy 缺少 password")
+		}
+		return &HY2Backend{
+			Key:          key,
+			Name:         firstNonEmpty(name, key),
+			Server:       server,
+			Port:         port,
+			Password:     password,
+			SNI:          firstNonEmpty(yamlString(values["sni"]), yamlString(values["peer"])),
+			Insecure:     yamlBool(values["skip-cert-verify"]) || yamlBool(values["insecure"]),
+			ObfsPassword: firstNonEmpty(yamlString(values["obfs-password"]), yamlString(values["obfs_password"])),
+		}, true, nil
+	case "vmess":
+		uuid := strings.TrimSpace(firstNonEmpty(yamlString(values["uuid"]), yamlString(values["id"])))
+		if uuid == "" {
+			return nil, false, fmt.Errorf("VMess proxy 缺少 uuid")
+		}
+		return &VMessBackend{
+			Key:       key,
+			Name:      firstNonEmpty(name, key),
+			Server:    server,
+			Port:      port,
+			UUID:      uuid,
+			Security:  firstNonEmpty(yamlString(values["cipher"]), yamlString(values["security"]), "auto"),
+			AlterID:   yamlInt(values["alterid"]),
+			SNI:       firstNonEmpty(yamlString(values["servername"]), yamlString(values["sni"])),
+			TLS:       yamlBool(values["tls"]),
+			Insecure:  yamlBool(values["skip-cert-verify"]) || yamlBool(values["insecure"]),
+			Transport: strings.ToLower(strings.TrimSpace(firstNonEmpty(yamlString(values["network"]), yamlString(values["type"])))),
+			Path:      firstNonEmpty(yamlString(values["ws-path"]), yamlString(values["path"])),
+			Host:      firstNonEmpty(yamlNestedString(values["ws-headers"], "host"), yamlString(values["host"])),
+		}, true, nil
+	case "ss", "shadowsocks":
+		method := strings.TrimSpace(firstNonEmpty(yamlString(values["cipher"]), yamlString(values["method"])))
+		password := strings.TrimSpace(yamlString(values["password"]))
+		if method == "" || password == "" {
+			return nil, false, fmt.Errorf("SS proxy 缺少 cipher 或 password")
+		}
+		return &SSBackend{
+			Key:        key,
+			Name:       firstNonEmpty(name, key),
+			Server:     server,
+			Port:       port,
+			Method:     method,
+			Password:   password,
+			Plugin:     normalizeSSPlugin(yamlString(values["plugin"])),
+			PluginOpts: normalizeSSPluginOpts(yamlString(values["plugin-opts"])),
+		}, true, nil
+	case "trojan":
+		password := strings.TrimSpace(yamlString(values["password"]))
+		if password == "" {
+			return nil, false, fmt.Errorf("Trojan proxy 缺少 password")
+		}
+		return &TrojanBackend{
+			Key:       key,
+			Name:      firstNonEmpty(name, key),
+			Server:    server,
+			Port:      port,
+			Password:  password,
+			SNI:       firstNonEmpty(yamlString(values["sni"]), yamlString(values["servername"])),
+			TLS:       true,
+			Insecure:  yamlBool(values["skip-cert-verify"]) || yamlBool(values["insecure"]),
+			Transport: strings.ToLower(strings.TrimSpace(firstNonEmpty(yamlString(values["network"]), yamlString(values["type"])))),
+			Path:      firstNonEmpty(yamlString(values["ws-path"]), yamlString(values["path"])),
+			Host:      firstNonEmpty(yamlNestedString(values["ws-headers"], "host"), yamlString(values["host"])),
+		}, true, nil
+	case "anytls":
+		password := strings.TrimSpace(yamlString(values["password"]))
+		if password == "" {
+			return nil, false, fmt.Errorf("AnyTLS proxy 缺少 password")
+		}
+		return &AnyTLSBackend{
+			Key:                      key,
+			Name:                     firstNonEmpty(name, key),
+			Server:                   server,
+			Port:                     port,
+			Password:                 password,
+			SNI:                      firstNonEmpty(yamlString(values["sni"]), yamlString(values["servername"])),
+			Insecure:                 yamlBool(values["skip-cert-verify"]) || yamlBool(values["insecure"]),
+			IdleSessionCheckInterval: yamlDurationString(values["idle-session-check-interval"]),
+			IdleSessionTimeout:       yamlDurationString(values["idle-session-timeout"]),
+			MinIdleSession:           yamlInt(values["min-idle-session"]),
+		}, true, nil
+	default:
+		return nil, false, nil
+	}
+}
+
+// clashProxyEndpointKey 生成 type+port+server 去重键。
+func clashProxyEndpointKey(node ProxyBackend) string {
+	if node == nil || node.BackendServer() == "" || node.BackendPort() == 0 {
+		return ""
+	}
+	return strings.ToLower(node.BackendProtocol()) + "\x00" + strings.ToLower(node.BackendServer()) + "\x00" + strconv.Itoa(node.BackendPort())
+}
+
+// yamlString 读取 YAML 标量字符串。
+func yamlString(node *yaml.Node) string {
+	if node == nil {
+		return ""
+	}
+	if node.Kind == yaml.MappingNode {
+		return yamlStringFromMapping(node)
+	}
+	if node.Kind == yaml.SequenceNode {
+		values := make([]string, 0, len(node.Content))
+		for _, item := range node.Content {
+			if value := yamlString(item); value != "" {
+				values = append(values, value)
+			}
+		}
+		return strings.Join(values, ",")
+	}
+	return strings.TrimSpace(node.Value)
+}
+
+// yamlStringFromMapping 将小型 YAML mapping 转成分号参数字符串。
+func yamlStringFromMapping(node *yaml.Node) string {
+	values := make([]string, 0, len(node.Content)/2)
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := strings.TrimSpace(node.Content[i].Value)
+		value := yamlString(node.Content[i+1])
+		if key == "" || value == "" {
+			continue
+		}
+		values = append(values, key+"="+value)
+	}
+	return strings.Join(values, ";")
+}
+
+// yamlNestedString 读取 YAML mapping 中的子字段。
+func yamlNestedString(node *yaml.Node, key string) string {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return ""
+	}
+	want := strings.ToLower(strings.TrimSpace(key))
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if strings.ToLower(strings.TrimSpace(node.Content[i].Value)) == want {
+			return yamlString(node.Content[i+1])
+		}
+	}
+	return ""
+}
+
+// yamlBool 读取 YAML 布尔值，兼容字符串 true/false。
+func yamlBool(node *yaml.Node) bool {
+	value := strings.ToLower(strings.TrimSpace(yamlString(node)))
+	return value == "true" || value == "1" || value == "yes" || value == "on"
+}
+
+// yamlInt 读取 YAML 整数值，非法时返回 0。
+func yamlInt(node *yaml.Node) int {
+	value := strings.TrimSpace(yamlString(node))
+	if value == "" {
+		return 0
+	}
+	number, err := strconv.Atoi(value)
+	if err != nil {
+		return 0
+	}
+	return number
+}
+
+// yamlDurationString 读取 Clash 数字秒字段并转成 sing-box duration。
+func yamlDurationString(node *yaml.Node) string {
+	value := strings.TrimSpace(yamlString(node))
+	if value == "" {
+		return ""
+	}
+	if _, err := strconv.Atoi(value); err == nil {
+		return value + "s"
+	}
+	return value
 }
 
 // DecodeSubscriptionText 识别 plain 和 base64 两类订阅正文。
@@ -6674,6 +8046,74 @@ func ParseAnyTLSURI(raw string) (*AnyTLSBackend, error) {
 	}, nil
 }
 
+// ParseSocksURI 解析 socks5 分享链接。
+func ParseSocksURI(raw string) (*SocksBackend, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return nil, err
+	}
+	if u.Scheme != "socks5" && u.Scheme != "socks" {
+		return nil, fmt.Errorf("不是 socks5 协议")
+	}
+	if u.Hostname() == "" {
+		return nil, fmt.Errorf("socks5 链接缺少服务端")
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		return nil, fmt.Errorf("端口无效")
+	}
+	username := ""
+	password := ""
+	if u.User != nil {
+		username = u.User.Username()
+		password, _ = u.User.Password()
+	}
+	name, _ := url.QueryUnescape(u.Fragment)
+	tag := SanitizeTag(firstNonEmpty(strings.TrimSpace(name), username, u.Hostname()))
+	return &SocksBackend{
+		Key:      tag,
+		Name:     firstNonEmpty(strings.TrimSpace(name), tag),
+		Server:   u.Hostname(),
+		Port:     port,
+		Username: username,
+		Password: password,
+	}, nil
+}
+
+// ParseHTTPProxyURI 解析 http 代理分享链接。
+func ParseHTTPProxyURI(raw string) (*HTTPBackend, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return nil, err
+	}
+	if u.Scheme != "http" {
+		return nil, fmt.Errorf("不是 http 代理协议")
+	}
+	if u.Hostname() == "" {
+		return nil, fmt.Errorf("http 代理链接缺少服务端")
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		return nil, fmt.Errorf("端口无效")
+	}
+	username := ""
+	password := ""
+	if u.User != nil {
+		username = u.User.Username()
+		password, _ = u.User.Password()
+	}
+	name, _ := url.QueryUnescape(u.Fragment)
+	tag := SanitizeTag(firstNonEmpty(strings.TrimSpace(name), username, u.Hostname()))
+	return &HTTPBackend{
+		Key:      tag,
+		Name:     firstNonEmpty(strings.TrimSpace(name), tag),
+		Server:   u.Hostname(),
+		Port:     port,
+		Username: username,
+		Password: password,
+	}, nil
+}
+
 // decodeSSUserInfo 解码 SIP002 userinfo 中的 method:password。
 func decodeSSUserInfo(value string) (string, string, error) {
 	decoded, err := decodeBase64String(value)
@@ -6747,8 +8187,12 @@ func backendProtocolRank(node ProxyBackend) int {
 		return 2
 	case "anytls":
 		return 3
-	case "ss":
+	case "socks":
 		return 4
+	case "http":
+		return 5
+	case "ss":
+		return 6
 	default:
 		return 9
 	}
@@ -6830,6 +8274,12 @@ func SubscriptionCacheFromBackends(backends []ProxyBackend) []SubscriptionCacheN
 		case *AnyTLSBackend:
 			copyNode := *node
 			nodes = append(nodes, SubscriptionCacheNode{Protocol: "anytls", AnyTLS: &copyNode})
+		case *SocksBackend:
+			copyNode := *node
+			nodes = append(nodes, SubscriptionCacheNode{Protocol: "socks", Socks: &copyNode})
+		case *HTTPBackend:
+			copyNode := *node
+			nodes = append(nodes, SubscriptionCacheNode{Protocol: "http", HTTP: &copyNode})
 		}
 	}
 	return nodes
@@ -6861,6 +8311,14 @@ func BackendsFromSubscriptionCache(data []byte) ([]ProxyBackend, error) {
 			case "anytls":
 				if envelope.AnyTLS != nil {
 					nodes = append(nodes, envelope.AnyTLS)
+				}
+			case "socks", "socks5":
+				if envelope.Socks != nil {
+					nodes = append(nodes, envelope.Socks)
+				}
+			case "http":
+				if envelope.HTTP != nil {
+					nodes = append(nodes, envelope.HTTP)
 				}
 			}
 		}

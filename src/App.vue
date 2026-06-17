@@ -1,361 +1,55 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-
-/** 后端节点适用于页面列表展示、编辑和出口选择。 */
-interface BackendNode {
-  /** 节点范围内机器 key。 */
-  key: string
-  /** 节点唯一 tag。 */
-  tag: string
-  /** 节点展示名称。 */
-  name: string
-  /** 节点协议。 */
-  protocol: string
-  /** 服务端地址。 */
-  server: string
-  /** 服务端端口。 */
-  port: number
-  /** 节点来源。 */
-  source: string
-  /** HY2/SS/Trojan/AnyTLS 静态节点认证密码。 */
-  password?: string
-  /** TLS 类静态节点 SNI。 */
-  sni?: string
-  /** TLS 类静态节点是否跳过证书校验。 */
-  insecure?: boolean
-  /** HY2 静态节点混淆密码。 */
-  obfs_password?: string
-  /** VMess 静态节点用户 ID。 */
-  uuid?: string
-  /** VMess 静态节点加密方式。 */
-  security?: string
-  /** VMess 静态节点 alterId。 */
-  alter_id?: number
-  /** VMess/Trojan 静态节点是否启用 TLS。 */
-  tls?: boolean
-  /** VMess/Trojan 静态节点传输层类型。 */
-  transport?: string
-  /** VMess/Trojan 静态节点 WebSocket/HTTP 路径。 */
-  path?: string
-  /** VMess/Trojan 静态节点 WebSocket/HTTP Host 头。 */
-  host?: string
-  /** Shadowsocks 加密方式。 */
-  method?: string
-  /** Shadowsocks SIP003 插件名。 */
-  plugin?: string
-  /** Shadowsocks SIP003 插件参数。 */
-  plugin_opts?: string
-  /** AnyTLS 空闲会话检查间隔。 */
-  idle_session_check_interval?: string
-  /** AnyTLS 空闲会话超时时间。 */
-  idle_session_timeout?: string
-  /** AnyTLS 至少保留的空闲会话数量。 */
-  min_idle_session?: number
-}
-
-/** 订阅分组适用于左侧纵向列表。 */
-interface SubscriptionGroup {
-  /** 订阅机器 key。 */
-  key: string
-  /** 订阅名称。 */
-  name: string
-  /** 是否启用。 */
-  enabled: boolean
-  /** 订阅地址。 */
-  url: string
-  /** 订阅请求 UA。 */
-  user_agent: string
-  /** 订阅缓存中的代理节点。 */
-  nodes: BackendNode[]
-  /** 订阅缓存错误。 */
-  error?: string
-}
-
-/** 动态组探测记录适用于展示后台最近三次结果。 */
-interface GroupProbeRecord {
-  /** 探测时间。 */
-  at: string
-  /** 延迟毫秒。 */
-  delay_ms: number
-  /** 是否成功。 */
-  ok: boolean
-  /** 失败原因。 */
-  error?: string
-}
-
-/** 动态组适用于虚拟节点选择和成员编辑。 */
-interface DynamicGroup {
-  /** 组机器 key。 */
-  key: string
-  /** 组 outbound tag。 */
-  tag: string
-  /** 组展示名称。 */
-  name: string
-  /** 组策略模式。 */
-  mode: string
-  /** 主备模式主节点链路 key。 */
-  primary: string
-  /** 成员链路 key。 */
-  members: string[]
-  /** 当前担当成员链路 key。 */
-  best_member: string
-  /** 当前担当 outbound tag。 */
-  best_tag: string
-  /** sing-box selector 当前成员链路 key。 */
-  current_member: string
-  /** sing-box selector 当前 outbound tag。 */
-  current_tag: string
-  /** 最后一次评估时间。 */
-  updated_at: string
-  /** 每个成员最近探测结果。 */
-  results: Record<string, GroupProbeRecord[]>
-}
-
-/** 动态出口规则适用于目的地址固定走指定 backend。 */
-interface DynamicOutboundRule {
-  /** 匹配条件，支持 domain:xx.com 或 IP/CIDR。 */
-  match: string
-  /** 目标 backend tag。 */
-  outbound: string
-}
-
-/** 路由检查结果适用于输入目标后的解释展示。 */
-interface RouteCheckResult {
-  /** 用户原始输入。 */
-  input: string
-  /** 后端清洗后的目标。 */
-  target: string
-  /** 目标类型。 */
-  kind: string
-  /** 判断结果。 */
-  decision: string
-  /** 出站标签。 */
-  outbound: string
-  /** 命中的规则。 */
-  matched_rule: string
-  /** 命中原因。 */
-  reason: string
-  /** 是否走代理。 */
-  via_proxy: boolean
-  /** 附加说明。 */
-  notes: string[]
-}
-
-/** 当前连接响应适用于连接流水页。 */
-interface ConnectionsResponse {
-  /** 本次刷新时间。 */
-  updated_at: string
-  /** 当前连接数量。 */
-  total: number
-  /** 累计上传字节数。 */
-  upload_total: number
-  /** 累计下载字节数。 */
-  download_total: number
-  /** 当前连接列表。 */
-  connections: ConnectionRow[]
-}
-
-/** 当前连接行适用于判断域名是否走代理。 */
-interface ConnectionRow {
-  /** 连接 ID。 */
-  id: string
-  /** 网络类型。 */
-  network: string
-  /** 来源地址。 */
-  source: string
-  /** 目标地址。 */
-  destination: string
-  /** 目标域名。 */
-  host: string
-  /** 目标 IP。 */
-  destination_ip: string
-  /** 目标端口。 */
-  destination_port: number
-  /** 上传字节数。 */
-  upload: number
-  /** 下载字节数。 */
-  download: number
-  /** 上传下载合计。 */
-  total: number
-  /** 出站链路。 */
-  chains: string[]
-  /** 出站链路展示文本。 */
-  chain_text: string
-  /** direct、proxy、reject 或 unknown。 */
-  decision: string
-  /** 命中规则。 */
-  rule: string
-  /** 命中规则 payload。 */
-  rule_payload: string
-  /** 连接开始时间。 */
-  started_at: string
-}
-
-/** 入口配置适用于 Web 修改 mixed 监听。 */
-interface InboundSettings {
-  /** 入口模式。 */
-  inbound_mode: string
-  /** mixed 监听地址。 */
-  mixed_listen: string
-  /** mixed 监听端口。 */
-  mixed_port: number
-}
-
-/** 动态组候选节点适用于成员选择列表。 */
-interface MemberOption {
-  /** 成员链路 key。 */
-  ref: string
-  /** 展示名称。 */
-  label: string
-  /** 节点协议。 */
-  protocol: string
-  /** 节点地址摘要。 */
-  subtitle: string
-}
-
-/** 动态组候选来源适用于竖向分组选择。 */
-interface MemberSourceGroup {
-  /** 来源 key。 */
-  key: string
-  /** 来源展示名。 */
-  name: string
-  /** 该来源下可选节点。 */
-  nodes: MemberOption[]
-}
-
-/** Geofile 状态适用于展示本地规则缓存。 */
-interface GeoFileItem {
-  /** 类型，geoip 或 geosite。 */
-  kind: string
-  /** rule-set tag。 */
-  tag: string
-  /** 本地路径。 */
-  path: string
-  /** 文件是否存在。 */
-  exists: boolean
-  /** 文件大小。 */
-  size_bytes: number
-  /** 修改时间。 */
-  modified_at: string
-  /** 是否锁定不可编辑。 */
-  locked: boolean
-  /** 是否参与当前规则。 */
-  enabled: boolean
-  /** 规则用途。 */
-  role: 'direct-base' | 'ads-block' | 'optional'
-}
-
-/** 健康状态适用于首屏探测。 */
-interface HealthState {
-  /** Web 服务是否可用。 */
-  ok: boolean
-  /** 是否缺少登录配置。 */
-  setup_required: boolean
-  /** 配置层是否启用 sing-box。 */
-  service_enabled: boolean
-  /** sing-box 服务状态。 */
-  sing_box_status: string
-  /** 当前 sboxctl 进程启动时间。 */
-  started_at: string
-  /** 当前激活出口。 */
-  active_outbound: string
-  /** 最后一次更新成功时间。 */
-  last_update_success: string
-  /** sboxctl 当前版本。 */
-  version: string
-}
-
-/** 主状态适用于单次加载整个首屏。 */
-interface PanelState {
-  /** 轻量健康状态。 */
-  health: HealthState
-  /** 打开页面或保存成功时的配置哈希。 */
-  config_hash: string
-  /** 静态节点列表。 */
-  static: BackendNode[]
-  /** 订阅分组列表。 */
-  subscriptions: SubscriptionGroup[]
-  /** 动态节点组列表。 */
-  dynamic_groups: DynamicGroup[]
-  /** Geofiles 本地缓存详情。 */
-  geofiles: GeoFileItem[]
-  /** /etc/hosts DNS 开关。 */
-  hosts_override: boolean
-  /** 入口配置。 */
-  inbound: InboundSettings
-  /** 强制代理规则文本。 */
-  force_proxy: string
-  /** 强制直连规则文本。 */
-  force_direct: string
-  /** 动态出口规则。 */
-  dynamic_outbound: DynamicOutboundRule[]
-  /** 当前保存配置生成的 sing-box JSON。 */
-  sing_box_config: string
-  /** 配置诊断提醒。 */
-  warnings: string[]
-}
-
-/** 静态节点编辑表单。 */
-interface StaticForm {
-  protocol: string
-  key: string
-  name: string
-  server: string
-  port: number
-  password: string
-  sni: string
-  insecure: boolean
-  obfs_password: string
-  uuid: string
-  security: string
-  alter_id: number
-  tls: boolean
-  transport: string
-  path: string
-  host: string
-  method: string
-  plugin: string
-  plugin_opts: string
-  /** AnyTLS 空闲会话检查间隔。 */
-  idle_session_check_interval: string
-  /** AnyTLS 空闲会话超时时间。 */
-  idle_session_timeout: string
-  /** AnyTLS 至少保留的空闲会话数量。 */
-  min_idle_session: number
-}
-
-/** 订阅编辑表单。 */
-interface SubscriptionForm {
-  key: string
-  name: string
-  url: string
-  enabled: boolean
-  user_agent: string
-}
-
-/** 登录响应适用于保存 JWT。 */
-interface LoginResponse {
-  /** JWT 字符串。 */
-  token: string
-  /** 过期时间。 */
-  expires_at: string
-}
-
-/** 节点探测响应适用于展示时延。 */
-interface ProbeResponse {
-  /** 被探测节点 tag。 */
-  tag: string
-  /** 节点时延，单位毫秒。 */
-  delay_ms: number
-}
-
-/** 机制说明分组适用于 Web 帮助弹窗。 */
-interface HelpSection {
-  /** 分组标题。 */
-  title: string
-  /** 分组说明条目。 */
-  items: string[]
-}
+import { authHeaders, readError } from './api'
+import { formatBytes, formatDurationSince, formatTime } from './format'
+import { helpSections } from './help'
+import {
+  arrayOrEmpty,
+  cloneDynamicGroups,
+  cloneDynamicOutbound,
+  cloneImportedGroups,
+  cloneOverrides,
+  cloneStaticNodes,
+  cloneSubscriptions,
+  emptyImportForm,
+  emptyStaticForm,
+  emptySubscriptionForm,
+  normalizeGroupMode,
+  normalizedInboundMode,
+  normalizedPanelState,
+  normalizeStaticProtocol,
+  sanitizeLocalKey,
+  serializeDynamicGroups,
+  serializeDynamicOutbound,
+  serializeImportedGroups,
+  serializeOverrides,
+  serializeStaticNodes,
+  serializeSubscriptions,
+  sortedRuleSets,
+  staticFormFromNode,
+  subscriptionFormFromItem,
+} from './panel-state'
+import type {
+  BackendNode,
+  ConnectionRow,
+  ConnectionsResponse,
+  DynamicGroup,
+  DynamicOutboundRule,
+  GeoFileItem,
+  HealthState,
+  ImportedNodeGroup,
+  ImportForm,
+  LoginResponse,
+  MemberOption,
+  MemberSourceGroup,
+  OverrideRule,
+  PanelState,
+  ProbeResponse,
+  RouteCheckResult,
+  StaticForm,
+  SubscriptionForm,
+  SubscriptionGroup,
+} from './types'
 
 const token = ref(localStorage.getItem('sboxctl_token') || '')
 const health = ref<HealthState | null>(null)
@@ -370,6 +64,8 @@ const staticNodes = ref<BackendNode[]>([])
 const savedStaticNodes = ref<BackendNode[]>([])
 const subscriptions = ref<SubscriptionGroup[]>([])
 const savedSubscriptions = ref<SubscriptionGroup[]>([])
+const importedGroups = ref<ImportedNodeGroup[]>([])
+const savedImportedGroups = ref<ImportedNodeGroup[]>([])
 const dynamicGroups = ref<DynamicGroup[]>([])
 const savedDynamicGroups = ref<DynamicGroup[]>([])
 const editingDynamicGroupKey = ref('')
@@ -377,9 +73,13 @@ const editingOriginalDynamicGroupKey = ref('')
 const dynamicOutbound = ref<DynamicOutboundRule[]>([])
 const savedDynamicOutbound = ref<DynamicOutboundRule[]>([])
 const selectedDynamicOutboundIndex = ref(0)
+const overrides = ref<OverrideRule[]>([])
+const savedOverrides = ref<OverrideRule[]>([])
+const selectedOverrideIndex = ref(0)
 const forceProxy = ref('')
 const forceDirect = ref('')
 const inboundMode = ref('tun')
+const tunRouteExcludeAddressText = ref('')
 const mixedListen = ref('0.0.0.0')
 const mixedPort = ref(1080)
 const serviceEnabled = ref(true)
@@ -388,6 +88,7 @@ const savedSelectedTag = ref('')
 const savedForceProxy = ref('')
 const savedForceDirect = ref('')
 const savedInboundMode = ref('tun')
+const savedTunRouteExcludeAddressText = ref('')
 const savedMixedListen = ref('0.0.0.0')
 const savedMixedPort = ref(1080)
 const savedServiceEnabled = ref(true)
@@ -404,19 +105,24 @@ const activeNodeTab = ref('static')
 const nowTick = ref(Date.now())
 const activeMemberSourceKey = ref('static')
 const activeOutboundSourceKey = ref('static')
+const activeDetourSourceKey = ref('static')
 const memberModalOpen = ref(false)
 const outboundModalOpen = ref(false)
+const staticDetourModalOpen = ref(false)
 const saving = ref(false)
 const setupSaving = ref(false)
 const probing = ref(true)
 const loading = ref(true)
 const updatingSubscription = ref('')
+const importingNodes = ref(false)
 const probingGroup = ref('')
 const probingNode = ref('')
 const nodeDelays = ref<Record<string, string>>({})
 const probeModalNode = ref<BackendNode | null>(null)
 const probeSeriesCount = ref<Record<string, number>>({})
 const probeSeriesResults = ref<Record<string, string[]>>({})
+const probeTargetURL = ref('')
+const probeModalTargetURL = ref('')
 const probingSeriesTag = ref('')
 const staticModalOpen = ref(false)
 const staticEditingKey = ref('')
@@ -424,6 +130,9 @@ const staticForm = ref<StaticForm>(emptyStaticForm())
 const subscriptionModalOpen = ref(false)
 const subscriptionEditingKey = ref('')
 const subscriptionForm = ref<SubscriptionForm>(emptySubscriptionForm())
+const importModalOpen = ref(false)
+const importForm = ref<ImportForm>(emptyImportForm())
+const importFileName = ref('')
 const listSearch = ref<Record<string, string>>({})
 const helpOpen = ref(false)
 const routeCheckInput = ref('')
@@ -440,110 +149,12 @@ const connectionSort = ref('total')
 const connectionsLoading = ref(false)
 const connectionsError = ref('')
 
-const helpSections: HelpSection[] = [
-  {
-    title: '保存与应用',
-    items: [
-      '页面里的新增、修改、删除先进入临时配置，只有右上角保存并应用才写入配置。',
-      '保存时会带配置 hash，发现后台配置已经变化会要求确认覆盖。',
-      '只改当前出口或动态出口目标时会即时生效，不会重启核心服务。',
-      '节点内容、订阅结构、静态节点、入口模式、DNS、Geo 规则或规则内容变化时会重新应用核心配置。',
-      '保存按钮会一直等待核心配置重新可用后才结束 loading。',
-      '出口切换后会清理旧连接，避免新访问继续沿用旧出口。',
-      '右上角服务开关只控制 sing-box 数据面；关闭后 Web 管理页仍可访问。',
-      '服务从关闭切回开启时，会等待核心接口可用后才结束 loading。',
-    ],
-  },
-  {
-    title: '订阅与缓存',
-    items: [
-      '新增或修改订阅后，右上角保存并应用会自动拉取一次启用的变更订阅。',
-      '订阅列表里的更新按钮只按已经保存的订阅配置拉取，不读取未应用的表单内容。',
-      '启动和渲染只补缺失缓存；每天 04:00 会更新 geofiles 和所有启用订阅。',
-      '订阅更新失败不会覆盖旧缓存，内容无变化时也不会重复写缓存文件。',
-      '订阅更新后如果节点消失，页面会提示被当前出口、动态组或动态出口引用的失效链路。',
-    ],
-  },
-  {
-    title: '入口模式',
-    items: [
-      '默认是 TUN，全局接管局域网客户端流量。',
-      '可切 mixed 模式，对外提供 socks/http 混合端口，默认 1080，支持账号密码。',
-      'ICMP 被路由到 direct，ping 只用于判断连通性，不代表 TCP/HTTPS 代理路径。',
-    ],
-  },
-  {
-    title: 'DNS 与 FakeIP',
-    items: [
-      '所有 DNS 流量会被接管到本机统一处理。',
-      '命中代理规则的 A 记录默认返回 FakeIP，范围是 198.18.0.0/15，并持久保存域名映射。',
-      'Apple、Windows、STUN、NTP、局域网等系统探测域名内置排除 FakeIP。',
-      'CN 和 private 域名走 direct DNS 119.29.29.29，默认远端 DNS 使用 Cloudflare DoH。',
-      'HTTPS/SVCB 查询会被拒绝，避免浏览器绕过 FakeIP 机制。',
-    ],
-  },
-  {
-    title: '路由优先级',
-    items: [
-      '顺序是域名识别、DNS 接管、ping 直连、动态出口、强制不走、强制走、内网和 CN 直连、广告拦截、Geo 代理规则、默认出口。',
-      '强制走代理在内网和 CN 直连规则前面，手写规则会更优先。',
-      '强制规则支持 domain:xx.com、src:CIDR、dst:CIDR；不写前缀按域名后缀处理。',
-    ],
-  },
-  {
-    title: 'GeoFiles',
-    items: [
-      'GeoFiles 来自内置列表，缓存为本地 srs 文件，缺失时会自动补齐。',
-      '可在 Web 里开关可选代理规则集；private、CN 等基础直连规则会被锁定。',
-      'geofiles 默认通过已有代理更新，下载失败保留旧文件。',
-    ],
-  },
-  {
-    title: 'Backend',
-    items: [
-      '静态节点支持扁平配置的 HY2、VMess、SS、Trojan 和 AnyTLS；订阅目前解析 HY2、VMess、SS、Trojan 和 AnyTLS，其它协议先跳过。',
-      '节点 key 在各自范围内必须唯一；订阅内 key 只要求订阅内唯一，跨订阅可重复。',
-      '删除订阅或静态节点时，如果动态组、动态出口或当前出口仍引用，会拒绝保存。',
-      '静态节点的新增、修改和删除也都是临时配置，刷新页面前会提示未保存改动。',
-    ],
-  },
-  {
-    title: '动态组',
-    items: [
-      '只有当前出口选中动态组时才后台探测，没被选中的组不探测。',
-      '每 5 分钟一轮，每轮按 5s、30s、60s 做三次探测，内存保存最近三次结果。',
-      '动态模式按成功次数优先，成功次数相同再按平均延迟选担当。',
-      '主备模式优先主节点；主节点最近一次失败就切备，最近一次恢复成功就切回主。',
-      '主备模式切到备节点会写 warn 日志，主节点恢复会写 info 日志。',
-      '动态组内部担当变化会即时生效，不会重启核心服务。',
-    ],
-  },
-  {
-    title: '动态出口',
-    items: [
-      '动态出口用于把特定目的域名或 IP 固定到指定 backend。',
-      '匹配支持 domain:xx.com 和 IP/CIDR；不写 domain: 时按域名后缀处理。',
-      '只修改动态出口绑定的 backend 会即时生效，不会重启核心服务。',
-      '动态出口规则优先于强制走和强制不走规则。',
-    ],
-  },
-  {
-    title: '探测与日志',
-    items: [
-      '节点探测会通过指定节点访问固定连通性地址，超时 2 秒。',
-      'Web 手动探测只展示延迟，不会切换当前出口。',
-      '编排器日志和 sing-box 日志写入配置的 log.dir，默认保留 5 个 5MB 文件。',
-      '登录连续失败 3 次会按 IP 锁定 1 小时。',
-    ],
-  },
-]
-
 const isLoggedIn = computed(() => token.value.length > 0)
 const setupRequired = computed(() => health.value?.setup_required === true)
 const isServiceRunning = computed(() => health.value?.sing_box_status === 'running')
 const showAbnormal = computed(() => !loading.value && !health.value)
 const lastUpdateText = computed(() => formatTime(health.value?.last_update_success || ''))
-const uptimeText = computed(() => formatDurationSince(health.value?.started_at || ''))
+const uptimeText = computed(() => formatDurationSince(health.value?.started_at || '', nowTick.value))
 const versionText = computed(() => health.value?.version || 'dev')
 const geoIPFiles = computed(() => arrayOrEmpty(panel.value?.geofiles).filter((file) => file.kind === 'geoip'))
 const geoSiteFiles = computed(
@@ -554,6 +165,9 @@ const editingDynamicGroup = computed(
 )
 const selectedDynamicOutboundRule = computed(
   () => dynamicOutbound.value[selectedDynamicOutboundIndex.value] || null,
+)
+const selectedOverrideRule = computed(
+  () => overrides.value[selectedOverrideIndex.value] || null,
 )
 const activeOutboundText = computed(() => outboundDisplayLabel(selectedTag.value))
 const configWarnings = computed(() => panel.value?.warnings || [])
@@ -604,10 +218,41 @@ const memberSourceGroups = computed<MemberSourceGroup[]>(() => {
       })),
     })
   }
+  for (const group of importedGroups.value) {
+    groups.push({
+      key: `import.${group.key}`,
+      name: group.name,
+      nodes: arrayOrEmpty(group.nodes).map((node) => ({
+        ref: `import.${group.key}.${node.key}`,
+        label: node.name || node.key,
+        protocol: node.protocol,
+        subtitle: nodeSubtitle(node),
+      })),
+    })
+  }
   return groups
 })
 const memberOptions = computed<MemberOption[]>(() => {
   return memberSourceGroups.value.flatMap((group) => group.nodes)
+})
+const detourSourceGroups = computed<MemberSourceGroup[]>(() => {
+  const groups = memberSourceGroups.value.map((group) => ({
+    ...group,
+    nodes: arrayOrEmpty(group.nodes).filter((node) => node.ref !== `static.${sanitizeLocalKey(staticForm.value.key)}`),
+  }))
+  if (dynamicGroups.value.length > 0) {
+    groups.push({
+      key: 'dynamic',
+      name: '动态',
+      nodes: dynamicGroups.value.map((group) => ({
+        ref: `group.${group.key}`,
+        label: group.name || group.key,
+        protocol: 'group',
+        subtitle: `${arrayOrEmpty(group.members).length} 个成员`,
+      })),
+    })
+  }
+  return groups
 })
 const outboundSourceGroups = computed<MemberSourceGroup[]>(() => {
   const groups: MemberSourceGroup[] = [
@@ -634,6 +279,18 @@ const outboundSourceGroups = computed<MemberSourceGroup[]>(() => {
       })),
     })
   }
+  for (const group of importedGroups.value) {
+    groups.push({
+      key: `import.${group.key}`,
+      name: group.name,
+      nodes: arrayOrEmpty(group.nodes).map((node) => ({
+        ref: node.tag,
+        label: node.name || node.key,
+        protocol: node.protocol,
+        subtitle: nodeSubtitle(node),
+      })),
+    })
+  }
   if (dynamicGroups.value.length > 0) {
     groups.push({
       key: 'dynamic',
@@ -648,16 +305,33 @@ const outboundSourceGroups = computed<MemberSourceGroup[]>(() => {
   }
   return groups
 })
+
+// 适用场景：把 TUN 排除地址多行文本转成后端数组。
+function parseTunRouteExcludeAddressText(value: string) {
+  return value
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+// 适用场景：把后端 TUN 排除地址数组展示成多行文本。
+function formatTunRouteExcludeAddressText(values: string[] | null | undefined) {
+  return arrayOrEmpty(values).join('\n')
+}
+
 const hasChanges = computed(() => {
   return (
     selectedTag.value !== savedSelectedTag.value ||
     serializeStaticNodes(staticNodes.value) !== serializeStaticNodes(savedStaticNodes.value) ||
     serializeSubscriptions(subscriptions.value) !== serializeSubscriptions(savedSubscriptions.value) ||
+    serializeImportedGroups(importedGroups.value) !== serializeImportedGroups(savedImportedGroups.value) ||
     serializeDynamicGroups(dynamicGroups.value) !== serializeDynamicGroups(savedDynamicGroups.value) ||
+    serializeOverrides(overrides.value) !== serializeOverrides(savedOverrides.value) ||
     serializeDynamicOutbound(dynamicOutbound.value) !== serializeDynamicOutbound(savedDynamicOutbound.value) ||
     forceProxy.value !== savedForceProxy.value ||
     forceDirect.value !== savedForceDirect.value ||
     inboundMode.value !== savedInboundMode.value ||
+    tunRouteExcludeAddressText.value !== savedTunRouteExcludeAddressText.value ||
     mixedListen.value !== savedMixedListen.value ||
     Number(mixedPort.value) !== Number(savedMixedPort.value) ||
     serviceEnabled.value !== savedServiceEnabled.value ||
@@ -675,82 +349,6 @@ window.addEventListener('beforeunload', (event) => {
   event.returnValue = ''
 })
 
-// 适用场景：格式化文件大小。
-function formatBytes(value: number) {
-  if (value <= 0) {
-    return '0 B'
-  }
-  if (value < 1024) {
-    return `${value} B`
-  }
-  if (value < 1024 * 1024) {
-    return `${(value / 1024).toFixed(1)} KB`
-  }
-  return `${(value / 1024 / 1024).toFixed(2)} MB`
-}
-
-// 适用场景：把后端时间转成人类可读短格式。
-function formatTime(value: string) {
-  if (!value) {
-    return '无记录'
-  }
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
-    return value
-  }
-  const month = `${date.getMonth() + 1}`.padStart(2, '0')
-  const day = `${date.getDate()}`.padStart(2, '0')
-  const hour = `${date.getHours()}`.padStart(2, '0')
-  const minute = `${date.getMinutes()}`.padStart(2, '0')
-  return `${month}-${day} ${hour}:${minute}`
-}
-
-// 适用场景：把启动时间换算成当前进程已运行多久。
-function formatDurationSince(value: string) {
-  if (!value) {
-    return '无记录'
-  }
-  const startedAt = new Date(value).getTime()
-  if (Number.isNaN(startedAt)) {
-    return value
-  }
-  let seconds = Math.max(0, Math.floor((nowTick.value - startedAt) / 1000))
-  const days = Math.floor(seconds / 86400)
-  seconds %= 86400
-  const hours = Math.floor(seconds / 3600)
-  seconds %= 3600
-  const minutes = Math.floor(seconds / 60)
-  const remainSeconds = seconds % 60
-  if (days > 0) {
-    return `${days}天${hours}小时`
-  }
-  if (hours > 0) {
-    return `${hours}小时${minutes}分`
-  }
-  if (minutes > 0) {
-    return `${minutes}分${remainSeconds}秒`
-  }
-  return `${remainSeconds}秒`
-}
-
-// 适用场景：生成带 JWT 的请求头。
-function authHeaders() {
-  return {
-    Authorization: `Bearer ${token.value}`,
-    'Content-Type': 'application/json',
-  }
-}
-
-// 适用场景：解析 API 错误消息。
-async function readError(response: Response) {
-  try {
-    const data = await response.json()
-    return data.error || response.statusText
-  } catch {
-    return response.statusText
-  }
-}
-
 // 适用场景：把后端状态同步到页面响应式数据。
 function applyPanelState(nextPanel: PanelState) {
   panel.value = normalizedPanelState(nextPanel)
@@ -760,6 +358,7 @@ function applyPanelState(nextPanel: PanelState) {
   selectedTag.value = nextPanel.health.active_outbound
   staticNodes.value = cloneStaticNodes(nextPanel.static)
   subscriptions.value = cloneSubscriptions(nextPanel.subscriptions)
+  importedGroups.value = cloneImportedGroups(nextPanel.imports)
   dynamicGroups.value = cloneDynamicGroups(nextPanel.dynamic_groups)
   if (!dynamicGroups.value.some((group) => group.key === editingDynamicGroupKey.value)) {
     editingDynamicGroupKey.value = ''
@@ -769,9 +368,16 @@ function applyPanelState(nextPanel: PanelState) {
   if (!memberSourceGroups.value.some((group) => group.key === activeMemberSourceKey.value)) {
     activeMemberSourceKey.value = memberSourceGroups.value[0]?.key || 'static'
   }
+  if (!detourSourceGroups.value.some((group) => group.key === activeDetourSourceKey.value)) {
+    activeDetourSourceKey.value = detourSourceGroups.value[0]?.key || 'static'
+  }
   dynamicOutbound.value = cloneDynamicOutbound(nextPanel.dynamic_outbound)
   if (selectedDynamicOutboundIndex.value >= dynamicOutbound.value.length) {
     selectedDynamicOutboundIndex.value = Math.max(dynamicOutbound.value.length - 1, 0)
+  }
+  overrides.value = cloneOverrides(nextPanel.overrides)
+  if (selectedOverrideIndex.value >= overrides.value.length) {
+    selectedOverrideIndex.value = Math.max(overrides.value.length - 1, 0)
   }
   activeNodeTab.value = tabKeyForOutbound(selectedTag.value)
   if (!outboundSourceGroups.value.some((group) => group.key === activeOutboundSourceKey.value)) {
@@ -780,6 +386,7 @@ function applyPanelState(nextPanel: PanelState) {
   forceProxy.value = nextPanel.force_proxy
   forceDirect.value = nextPanel.force_direct
   inboundMode.value = normalizedInboundMode(nextPanel.inbound?.inbound_mode)
+  tunRouteExcludeAddressText.value = formatTunRouteExcludeAddressText(nextPanel.inbound?.tun_route_exclude_address)
   mixedListen.value = nextPanel.inbound?.mixed_listen || '0.0.0.0'
   mixedPort.value = nextPanel.inbound?.mixed_port || 1080
   serviceEnabled.value = nextPanel.health.service_enabled !== false
@@ -792,11 +399,14 @@ function applyPanelState(nextPanel: PanelState) {
   savedSelectedTag.value = selectedTag.value
   savedStaticNodes.value = cloneStaticNodes(staticNodes.value)
   savedSubscriptions.value = cloneSubscriptions(subscriptions.value)
+  savedImportedGroups.value = cloneImportedGroups(importedGroups.value)
   savedDynamicGroups.value = cloneDynamicGroups(dynamicGroups.value)
+  savedOverrides.value = cloneOverrides(overrides.value)
   savedDynamicOutbound.value = cloneDynamicOutbound(dynamicOutbound.value)
   savedForceProxy.value = forceProxy.value
   savedForceDirect.value = forceDirect.value
   savedInboundMode.value = inboundMode.value
+  savedTunRouteExcludeAddressText.value = tunRouteExcludeAddressText.value
   savedMixedListen.value = mixedListen.value
   savedMixedPort.value = Number(mixedPort.value)
   savedServiceEnabled.value = serviceEnabled.value
@@ -805,190 +415,11 @@ function applyPanelState(nextPanel: PanelState) {
   savedProxyRuleSets.value = [...proxyRuleSets.value]
 }
 
-// 适用场景：归一化 Web 主状态，避免模板读取 null 列表时中断渲染。
-function normalizedPanelState(nextPanel: PanelState) {
-  return {
-    ...nextPanel,
-    static: cloneStaticNodes(nextPanel.static),
-    subscriptions: cloneSubscriptions(nextPanel.subscriptions),
-    dynamic_groups: cloneDynamicGroups(nextPanel.dynamic_groups),
-    geofiles: arrayOrEmpty(nextPanel.geofiles).map((file) => ({ ...file })),
-    inbound: normalizeInboundSettings(nextPanel.inbound),
-    dynamic_outbound: cloneDynamicOutbound(nextPanel.dynamic_outbound),
-    warnings: [...arrayOrEmpty(nextPanel.warnings)],
-  }
-}
-
-// 适用场景：归一化入口配置，兼容旧后端状态。
-function normalizeInboundSettings(value: InboundSettings | null | undefined) {
-  return {
-    inbound_mode: normalizedInboundMode(value?.inbound_mode || ''),
-    mixed_listen: value?.mixed_listen || '0.0.0.0',
-    mixed_port: value?.mixed_port || 1080,
-  }
-}
-
-// 适用场景：归一化入口模式，兼容旧配置空值。
-function normalizedInboundMode(value: string) {
-  return value === 'mixed' ? 'mixed' : 'tun'
-}
-
-// 适用场景：把后端空 slice 编码出的 null 规整成前端可遍历列表。
-function arrayOrEmpty<T>(items: T[] | null | undefined) {
-  return Array.isArray(items) ? items : []
-}
-
-// 适用场景：复制静态节点，避免编辑污染保存基线。
-function cloneStaticNodes(nodes: BackendNode[] | null | undefined) {
-  return arrayOrEmpty(nodes).map((node) => ({ ...node }))
-}
-
-// 适用场景：复制订阅配置和缓存节点。
-function cloneSubscriptions(items: SubscriptionGroup[] | null | undefined) {
-  return arrayOrEmpty(items).map((item) => ({
-    ...item,
-    nodes: arrayOrEmpty(item.nodes).map((node) => ({ ...node })),
-  }))
-}
-
-// 适用场景：稳定比较静态节点配置是否变更。
-function serializeStaticNodes(nodes: BackendNode[]) {
-  return JSON.stringify(nodes.map((node) => ({
-    protocol: normalizeStaticProtocol(node.protocol),
-    key: node.key,
-    name: node.name,
-    server: node.server,
-    port: node.port,
-    password: node.password || '',
-    sni: node.sni || '',
-    insecure: node.insecure === true,
-    obfs_password: node.obfs_password || '',
-    uuid: node.uuid || '',
-    security: node.security || '',
-    alter_id: node.alter_id || 0,
-    tls: node.tls === true,
-    transport: node.transport || '',
-    path: node.path || '',
-    host: node.host || '',
-    method: node.method || '',
-    plugin: node.plugin || '',
-    plugin_opts: node.plugin_opts || '',
-    idle_session_check_interval: node.idle_session_check_interval || '',
-    idle_session_timeout: node.idle_session_timeout || '',
-    min_idle_session: node.min_idle_session || 0,
-  })))
-}
-
-// 适用场景：稳定比较订阅配置是否变更。
-function serializeSubscriptions(items: SubscriptionGroup[]) {
-  return JSON.stringify(items.map((item) => ({
-    key: item.key,
-    name: item.name,
-    url: item.url,
-    enabled: item.enabled,
-    user_agent: item.user_agent,
-  })))
-}
-
-// 适用场景：稳定比较 geofile 规则集选择。
-function sortedRuleSets(items: string[]) {
-  return [...items].sort().join(',')
-}
-
-// 适用场景：规范化静态节点协议，兼容旧配置空协议。
-function normalizeStaticProtocol(protocol: string) {
-  if (protocol === 'vmess') {
-    return 'vmess'
-  }
-  if (protocol === 'ss') {
-    return 'ss'
-  }
-  if (protocol === 'trojan') {
-    return 'trojan'
-  }
-  if (protocol === 'anytls') {
-    return 'anytls'
-  }
-  return 'hy2'
-}
-
-// 适用场景：复制动态组，避免编辑时污染保存基线。
-function cloneDynamicGroups(groups: DynamicGroup[] | null | undefined) {
-  return arrayOrEmpty(groups).map((group) => ({
-    ...group,
-    members: [...arrayOrEmpty(group.members)],
-    results: Object.fromEntries(
-      Object.entries(group.results || {}).map(([key, records]) => [
-        key,
-        arrayOrEmpty(records).map((item) => ({ ...item })),
-      ]),
-    ),
-  }))
-}
-
-// 适用场景：稳定比较动态组配置是否变更。
-function serializeDynamicGroups(groups: DynamicGroup[]) {
-  return JSON.stringify(
-    groups.map((group) => ({
-      key: group.key,
-      mode: normalizeGroupMode(group.mode),
-      primary: normalizeGroupMode(group.mode) === 'primary_backup' ? group.primary : '',
-      members: [...arrayOrEmpty(group.members)],
-    })),
-  )
-}
-
-// 适用场景：把后端或旧前端状态中的动态组模式规整成有效值。
-function normalizeGroupMode(mode: string) {
-  return mode === 'primary_backup' ? 'primary_backup' : 'dynamic'
-}
-
-// 适用场景：复制动态出口规则，避免编辑污染保存基线。
-function cloneDynamicOutbound(rules: DynamicOutboundRule[] | null | undefined) {
-  return arrayOrEmpty(rules).map((rule) => ({ ...rule }))
-}
-
-// 适用场景：稳定比较动态出口规则是否变更。
-function serializeDynamicOutbound(rules: DynamicOutboundRule[]) {
-  return JSON.stringify(rules.map((rule) => ({
-    match: rule.match,
-    outbound: rule.outbound,
-  })))
-}
-
-// 适用场景：生成空静态节点表单。
-function emptyStaticForm(): StaticForm {
-  return {
-    protocol: 'hy2',
-    key: '',
-    name: '',
-    server: '',
-    port: 443,
-    password: '',
-    sni: '',
-    insecure: false,
-    obfs_password: '',
-    uuid: '',
-    security: 'auto',
-    alter_id: 0,
-    tls: false,
-    transport: '',
-    path: '',
-    host: '',
-    method: 'aes-128-gcm',
-    plugin: '',
-    plugin_opts: '',
-    idle_session_check_interval: '',
-    idle_session_timeout: '',
-    min_idle_session: 0,
-  }
-}
-
 // 适用场景：切换静态节点协议时补齐该协议的常见默认项。
 function updateStaticProtocol(protocol: string) {
   const nextProtocol = normalizeStaticProtocol(protocol)
   staticForm.value.protocol = nextProtocol
-  if (nextProtocol === 'trojan' || nextProtocol === 'anytls') {
+  if (nextProtocol === 'trojan' || nextProtocol === 'anytls' || nextProtocol === 'socks' || nextProtocol === 'http') {
     staticForm.value.port = Number(staticForm.value.port) || 443
   }
   if (nextProtocol === 'trojan') {
@@ -996,60 +427,44 @@ function updateStaticProtocol(protocol: string) {
   }
 }
 
-// 适用场景：生成空订阅表单。
-function emptySubscriptionForm(): SubscriptionForm {
-  return {
-    key: '',
-    name: '',
-    url: '',
-    enabled: true,
-    user_agent: 'sing-box/1.13.12',
+// 适用场景：查找静态节点 detour 引用对应的候选项。
+function findDetourOption(refKey: string) {
+  for (const source of detourSourceGroups.value) {
+    const option = arrayOrEmpty(source.nodes).find((item) => item.ref === refKey)
+    if (option) {
+      return { source, option }
+    }
   }
+  return null
 }
 
-// 适用场景：用节点生成静态编辑表单。
-function staticFormFromNode(node: BackendNode): StaticForm {
-  return {
-    protocol: normalizeStaticProtocol(node.protocol),
-    key: node.key,
-    name: node.name,
-    server: node.server,
-    port: node.port,
-    password: node.password || '',
-    sni: node.sni || '',
-    insecure: node.insecure === true,
-    obfs_password: node.obfs_password || '',
-    uuid: node.uuid || '',
-    security: node.security || 'auto',
-    alter_id: node.alter_id || 0,
-    tls: node.tls === true,
-    transport: node.transport || '',
-    path: node.path || '',
-    host: node.host || '',
-    method: node.method || 'aes-128-gcm',
-    plugin: node.plugin || '',
-    plugin_opts: node.plugin_opts || '',
-    idle_session_check_interval: node.idle_session_check_interval || '',
-    idle_session_timeout: node.idle_session_timeout || '',
-    min_idle_session: node.min_idle_session || 0,
+// 适用场景：展示静态节点 detour 目标名称。
+function detourLabel(refKey: string) {
+  if (!refKey) {
+    return '不使用'
   }
+  const found = findDetourOption(refKey)
+  if (!found) {
+    return refKey
+  }
+  return `${found.source.name} / ${found.option.label}`
 }
 
-// 适用场景：用订阅生成订阅编辑表单。
-function subscriptionFormFromItem(item: SubscriptionGroup): SubscriptionForm {
-  return {
-    key: item.key,
-    name: item.name,
-    url: item.url,
-    enabled: item.enabled,
-    user_agent: item.user_agent,
-  }
+// 适用场景：选择静态节点链式拨号前置出口。
+function selectStaticDetour(refKey: string) {
+  staticForm.value.detour = refKey
+}
+
+// 适用场景：清空静态节点链式拨号前置出口。
+function clearStaticDetour() {
+  staticForm.value.detour = ''
 }
 
 // 适用场景：打开新增静态节点弹窗。
 function addStaticNode() {
   staticEditingKey.value = ''
   staticForm.value = emptyStaticForm()
+  activeDetourSourceKey.value = detourSourceGroups.value[0]?.key || 'static'
   staticModalOpen.value = true
 }
 
@@ -1057,6 +472,7 @@ function addStaticNode() {
 function editStaticNode(node: BackendNode) {
   staticEditingKey.value = node.key
   staticForm.value = staticFormFromNode(node)
+  activeDetourSourceKey.value = detourSourceGroups.value[0]?.key || 'static'
   staticModalOpen.value = true
 }
 
@@ -1093,6 +509,11 @@ function saveStaticDraft() {
     pageError.value = 'SS 静态节点 password 必填'
     return
   }
+  const detour = item.detour.trim()
+  if (detour === `static.${key}`) {
+    pageError.value = '静态节点不能 detour 到自己'
+    return
+  }
   const next: BackendNode = {
     key,
     tag: `static-${key}`,
@@ -1101,7 +522,9 @@ function saveStaticDraft() {
     server: item.server.trim(),
     port: Number(item.port) || 443,
     source: 'static',
-    password: protocol === 'hy2' || protocol === 'ss' || protocol === 'trojan' || protocol === 'anytls' ? item.password.trim() : '',
+    username: protocol === 'socks' || protocol === 'http' ? item.username.trim() : '',
+    password: protocol === 'hy2' || protocol === 'ss' || protocol === 'trojan' || protocol === 'anytls' || protocol === 'socks' || protocol === 'http' ? item.password.trim() : '',
+    detour,
     sni: item.sni.trim(),
     insecure: item.insecure,
     obfs_password: protocol === 'hy2' ? item.obfs_password.trim() : '',
@@ -1199,6 +622,89 @@ function saveSubscriptionDraft() {
   subscriptionModalOpen.value = false
 }
 
+// 适用场景：打开 Clash 配置导入弹窗。
+function openImportModal(group?: ImportedNodeGroup) {
+  importForm.value = group
+    ? {
+      key: group.key,
+      name: group.name,
+      source: group.source || 'clash',
+      content: '',
+    }
+    : emptyImportForm()
+  importFileName.value = ''
+  importModalOpen.value = true
+}
+
+// 适用场景：从本地文件读取导入内容，仍复用同一份提取流程。
+async function loadImportFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) {
+    return
+  }
+  try {
+    importForm.value.content = await file.text()
+    importFileName.value = file.name
+  } catch (error) {
+    pageError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    input.value = ''
+  }
+}
+
+// 适用场景：提交导入内容，并用同 key 直接替换缓存。
+async function submitImport() {
+  const key = sanitizeLocalKey(importForm.value.key || importForm.value.name)
+  if (!key) {
+    pageError.value = '导入分组 key 不能为空'
+    return
+  }
+  if (!importForm.value.content.trim()) {
+    pageError.value = '导入内容不能为空'
+    return
+  }
+  importingNodes.value = true
+  pageError.value = ''
+  try {
+    const response = await fetch('/api/import', {
+      method: 'POST',
+      headers: authHeaders(token.value),
+      body: JSON.stringify({
+        key,
+        name: importForm.value.name.trim() || key,
+        source: importForm.value.source,
+        content: importForm.value.content,
+      }),
+    })
+    if (!response.ok) {
+      throw new Error(await readError(response))
+    }
+    applyPanelState((await response.json()).state)
+    importModalOpen.value = false
+  } catch (error) {
+    pageError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    importingNodes.value = false
+  }
+}
+
+// 适用场景：删除导入分组前检查页面临时配置引用。
+function removeImportedGroup(group: ImportedNodeGroup) {
+  const nodes = arrayOrEmpty(group.nodes)
+  const refs = nodes.map((node) => `import.${group.key}.${node.key}`)
+  const tags = nodes.map((node) => node.tag)
+  const blockers = localBackendBlockers(tags, refs)
+  if (blockers.length > 0) {
+    pageError.value = `不能删除，仍被引用: ${blockers.join('；')}`
+    return
+  }
+  importedGroups.value = importedGroups.value.filter((item) => item.key !== group.key)
+  if (tags.includes(selectedTag.value)) {
+    selectedTag.value = firstAvailableNodeTag()
+  }
+}
+
 // 适用场景：重命名静态节点时同步临时引用。
 function replaceBackendReferences(oldTag: string, newTag: string, oldRef: string, newRef: string) {
   if (selectedTag.value === oldTag) {
@@ -1208,6 +714,10 @@ function replaceBackendReferences(oldTag: string, newTag: string, oldRef: string
     ...group,
     primary: group.primary === oldRef ? newRef : group.primary,
     members: arrayOrEmpty(group.members).map((member) => (member === oldRef ? newRef : member)),
+  }))
+  staticNodes.value = staticNodes.value.map((node) => ({
+    ...node,
+    detour: node.detour === oldRef ? newRef : node.detour,
   }))
   dynamicOutbound.value = dynamicOutbound.value.map((rule) => ({
     ...rule,
@@ -1243,11 +753,6 @@ function removeSubscription(subscription: SubscriptionGroup) {
   }
 }
 
-// 适用场景：按前端规则清洗 key。
-function sanitizeLocalKey(value: string) {
-  return value.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '')
-}
-
 // 适用场景：查找本地临时配置里仍引用某 backend 的位置。
 function localBackendBlockers(tags: string | string[], refs: string | string[]) {
   const tagSet = new Set(Array.isArray(tags) ? tags : [tags])
@@ -1269,6 +774,11 @@ function localBackendBlockers(tags: string | string[], refs: string | string[]) 
   for (const rule of dynamicOutbound.value) {
     if (tagSet.has(rule.outbound)) {
       blockers.push(`动态出口 ${rule.match}`)
+    }
+  }
+  for (const node of staticNodes.value) {
+    if (refSet.has(node.detour || '')) {
+      blockers.push(`静态节点 ${node.key} detour`)
     }
   }
   return blockers
@@ -1304,6 +814,11 @@ function addDynamicGroup() {
 function removeEditingDynamicGroup() {
   const group = editingDynamicGroup.value
   if (!group) {
+    return
+  }
+  const blockers = localBackendBlockers(group.tag, `group.${group.key}`)
+  if (blockers.length > 0) {
+    pageError.value = `不能删除，仍被引用: ${blockers.join('；')}`
     return
   }
   dynamicGroups.value = dynamicGroups.value.filter((item) => item.key !== group.key)
@@ -1349,6 +864,12 @@ function firstAvailableNodeTag() {
       return nodes[0].tag
     }
   }
+  for (const group of importedGroups.value) {
+    const nodes = arrayOrEmpty(group.nodes)
+    if (nodes[0]) {
+      return nodes[0].tag
+    }
+  }
   return ''
 }
 
@@ -1380,6 +901,7 @@ function updateSelectedDynamicGroupKey(value: string) {
   if (!group) {
     return
   }
+  const oldKey = group.key
   const oldTag = group.tag
   const nextKey = value.trim()
   group.key = nextKey
@@ -1388,6 +910,10 @@ function updateSelectedDynamicGroupKey(value: string) {
   if (selectedTag.value === oldTag) {
     selectedTag.value = group.tag
   }
+  staticNodes.value = staticNodes.value.map((node) => ({
+    ...node,
+    detour: node.detour === `group.${oldKey}` ? `group.${nextKey}` : node.detour,
+  }))
   dynamicOutbound.value = dynamicOutbound.value.map((rule) => ({
     ...rule,
     outbound: rule.outbound === oldTag ? group.tag : rule.outbound,
@@ -1572,6 +1098,93 @@ function outboundLabel(tag: string) {
   return tag || '未选择'
 }
 
+// 适用场景：新增一条静态跳转规则。
+function addOverrideRule() {
+  const nextIndex = overrides.value.length + 1
+  overrides.value = [
+    ...overrides.value,
+    {
+      key: `override-${nextIndex}`,
+      match: '',
+      address: '127.0.0.1',
+      port: 0,
+      outbound: 'direct',
+      enabled: true,
+    },
+  ]
+  selectedOverrideIndex.value = overrides.value.length - 1
+}
+
+// 适用场景：选择正在编辑的静态跳转规则。
+function selectOverrideRule(index: number) {
+  selectedOverrideIndex.value = index
+}
+
+// 适用场景：删除当前静态跳转规则。
+function removeSelectedOverrideRule() {
+  if (!selectedOverrideRule.value) {
+    return
+  }
+  overrides.value = overrides.value.filter((_, index) => index !== selectedOverrideIndex.value)
+  selectedOverrideIndex.value = Math.max(Math.min(selectedOverrideIndex.value, overrides.value.length - 1), 0)
+}
+
+// 适用场景：更新当前静态跳转 key。
+function updateSelectedOverrideKey(value: string) {
+  const rule = selectedOverrideRule.value
+  if (!rule) {
+    return
+  }
+  rule.key = sanitizeLocalKey(value)
+}
+
+// 适用场景：更新当前静态跳转匹配条件。
+function updateSelectedOverrideMatch(value: string) {
+  const rule = selectedOverrideRule.value
+  if (!rule) {
+    return
+  }
+  rule.match = value
+}
+
+// 适用场景：更新当前静态跳转目标地址。
+function updateSelectedOverrideAddress(value: string) {
+  const rule = selectedOverrideRule.value
+  if (!rule) {
+    return
+  }
+  rule.address = value
+}
+
+// 适用场景：更新当前静态跳转目标端口。
+function updateSelectedOverridePort(value: number | string | null) {
+	const rule = selectedOverrideRule.value
+	if (!rule) {
+		return
+	}
+	rule.port = Number(value) || 0
+}
+
+// 适用场景：展示静态跳转规则的目标地址摘要。
+function overrideTargetText(rule: OverrideRule) {
+	if (!rule.address && !rule.port) {
+		return '目标未填'
+	}
+	if (!rule.port) {
+		return `${rule.address || '地址未填'}:端口未填`
+	}
+	return `${rule.address || '地址未填'}:${rule.port}`
+}
+
+// 适用场景：切换当前静态跳转启用状态。
+function updateSelectedOverrideEnabled(checked: boolean) {
+	const rule = selectedOverrideRule.value
+  if (!rule) {
+    return
+  }
+  rule.enabled = checked
+}
+
 // 适用场景：判断 geofile 当前是否启用。
 function isGeoFileEnabled(file: GeoFileItem) {
   if (file.role === 'ads-block') {
@@ -1645,6 +1258,12 @@ function filteredSubscriptionNodes(subscription: SubscriptionGroup) {
   return arrayOrEmpty(subscription.nodes).filter((node) => nodeMatchesSearch(node, query))
 }
 
+// 适用场景：返回过滤后的导入节点。
+function filteredImportedNodes(group: ImportedNodeGroup) {
+  const query = listQuery(`import.${group.key}`)
+  return arrayOrEmpty(group.nodes).filter((node) => nodeMatchesSearch(node, query))
+}
+
 // 适用场景：返回过滤后的动态组。
 function filteredDynamicGroups() {
   const query = listQuery('dynamic')
@@ -1690,7 +1309,7 @@ async function fetchState() {
   }
   const response = await fetch('/api/state', {
     cache: 'no-store',
-    headers: authHeaders(),
+    headers: authHeaders(token.value),
   })
   if (response.status === 401 || response.status === 403) {
     logout()
@@ -1711,7 +1330,7 @@ async function fetchConnections() {
   try {
     const response = await fetch('/api/connections', {
       cache: 'no-store',
-      headers: authHeaders(),
+      headers: authHeaders(token.value),
     })
     if (response.status === 401 || response.status === 403) {
       logout()
@@ -1920,6 +1539,12 @@ function outboundDisplayLabel(tag: string) {
       return `${subscription.name} / ${node.name || node.key}`
     }
   }
+  for (const group of importedGroups.value) {
+    const node = arrayOrEmpty(group.nodes).find((item) => item.tag === tag)
+    if (node) {
+      return `${group.name} / ${node.name || node.key}`
+    }
+  }
   const group = dynamicGroups.value.find((item) => item.tag === tag)
   if (group) {
     return `group / ${group.name || group.key}`
@@ -1938,6 +1563,11 @@ function tabKeyForOutbound(tag: string) {
   for (const subscription of subscriptions.value) {
     if (arrayOrEmpty(subscription.nodes).some((node) => node.tag === tag)) {
       return subscription.key
+    }
+  }
+  for (const group of importedGroups.value) {
+    if (arrayOrEmpty(group.nodes).some((node) => node.tag === tag)) {
+      return `import.${group.key}`
     }
   }
   if (dynamicGroups.value.some((group) => group.tag === tag)) {
@@ -1971,6 +1601,12 @@ function protocolColor(node: BackendNode) {
   if (node.protocol === 'ss') {
     return 'green'
   }
+  if (node.protocol === 'socks') {
+    return 'lime'
+  }
+  if (node.protocol === 'http') {
+    return 'blue'
+  }
   return 'purple'
 }
 
@@ -1989,6 +1625,7 @@ function probeErrorText(error: unknown) {
 // 适用场景：打开单节点连续探测弹窗。
 function openProbeModal(node: BackendNode) {
   probeModalNode.value = node
+  probeModalTargetURL.value = probeTargetURL.value
   if (!probeSeriesCount.value[node.tag]) {
     probeSeriesCount.value = { ...probeSeriesCount.value, [node.tag]: 10 }
   }
@@ -2035,7 +1672,7 @@ async function saveAll(confirmOverwrite: boolean | Event = false) {
   try {
     const response = await fetch('/api/save', {
       method: 'POST',
-      headers: authHeaders(),
+      headers: authHeaders(token.value),
       body: JSON.stringify({
         service_enabled: serviceEnabled.value,
         active_outbound: selectedTag.value,
@@ -2048,6 +1685,8 @@ async function saveAll(confirmOverwrite: boolean | Event = false) {
           server: node.server,
           port: Number(node.port),
           password: node.password || '',
+          username: node.username || '',
+          detour: node.detour || '',
           sni: node.sni || '',
           insecure: node.insecure === true,
           obfs_password: node.obfs_password || '',
@@ -2072,6 +1711,11 @@ async function saveAll(confirmOverwrite: boolean | Event = false) {
           enabled: subscription.enabled,
           user_agent: subscription.user_agent,
         })),
+        imports: importedGroups.value.map((group) => ({
+          key: group.key,
+          name: group.name,
+          source: group.source || 'clash',
+        })),
         dynamic_groups: dynamicGroups.value.map((group) => ({
           key: group.key,
           mode: normalizeGroupMode(group.mode),
@@ -2080,10 +1724,19 @@ async function saveAll(confirmOverwrite: boolean | Event = false) {
         })),
         inbound: {
           inbound_mode: normalizedInboundMode(inboundMode.value),
+          tun_route_exclude_address: parseTunRouteExcludeAddressText(tunRouteExcludeAddressText.value),
           mixed_listen: mixedListen.value,
           mixed_port: Number(mixedPort.value),
         },
         dynamic_outbound: dynamicOutbound.value,
+        overrides: overrides.value.map((rule) => ({
+          key: rule.key,
+          match: rule.match,
+          address: rule.address,
+          port: Number(rule.port) || 0,
+          outbound: rule.outbound || 'direct',
+          enabled: rule.enabled !== false,
+        })),
         force_proxy: forceProxy.value,
         force_direct: forceDirect.value,
         ads_block: adsBlock.value,
@@ -2126,7 +1779,7 @@ async function checkRouteTarget() {
   try {
     const response = await fetch('/api/route/check', {
       method: 'POST',
-      headers: authHeaders(),
+      headers: authHeaders(token.value),
       body: JSON.stringify({ target }),
     })
     if (!response.ok) {
@@ -2180,7 +1833,7 @@ async function updateSubscription(name: string, useProxy: boolean) {
   try {
     const response = await fetch('/api/subscription/update', {
       method: 'POST',
-      headers: authHeaders(),
+      headers: authHeaders(token.value),
       body: JSON.stringify({ name, use_proxy: useProxy }),
     })
     if (!response.ok) {
@@ -2195,11 +1848,11 @@ async function updateSubscription(name: string, useProxy: boolean) {
 }
 
 // 适用场景：请求一次节点时延探测并返回展示文本。
-async function probeNodeOnce(node: BackendNode) {
+async function probeNodeOnce(node: BackendNode, probeURL = '') {
   const response = await fetch('/api/node/probe', {
     method: 'POST',
-    headers: authHeaders(),
-    body: JSON.stringify({ tag: node.tag }),
+    headers: authHeaders(token.value),
+    body: JSON.stringify({ tag: node.tag, url: probeURL.trim() }),
   })
   if (!response.ok) {
     throw new Error(await readError(response))
@@ -2212,7 +1865,7 @@ async function probeNodeOnce(node: BackendNode) {
 async function probeNode(node: BackendNode) {
   probingNode.value = node.tag
   try {
-    nodeDelays.value = { ...nodeDelays.value, [node.tag]: await probeNodeOnce(node) }
+    nodeDelays.value = { ...nodeDelays.value, [node.tag]: await probeNodeOnce(node, probeTargetURL.value) }
   } catch (error) {
     nodeDelays.value = { ...nodeDelays.value, [node.tag]: probeErrorText(error) }
   } finally {
@@ -2226,6 +1879,7 @@ async function probeNodeSeries(node: BackendNode) {
     return
   }
   const count = currentProbeSeriesCount(node.tag)
+  const probeURL = probeModalTargetURL.value
   probingSeriesTag.value = node.tag
   probeModalNode.value = node
   probeSeriesResults.value = { ...probeSeriesResults.value, [node.tag]: [] }
@@ -2233,7 +1887,7 @@ async function probeNodeSeries(node: BackendNode) {
     for (let index = 0; index < count; index += 1) {
       probingNode.value = node.tag
       try {
-        const result = await probeNodeOnce(node)
+        const result = await probeNodeOnce(node, probeURL)
         nodeDelays.value = { ...nodeDelays.value, [node.tag]: result }
         appendProbeSeriesResult(node.tag, `第 ${index + 1} 次 ${result}`)
       } catch (error) {
@@ -2432,6 +2086,14 @@ onUnmounted(() => {
           <div class="node-actions">
             <a-button size="small" @click="addStaticNode">新增静态</a-button>
             <a-button size="small" @click="addSubscription">新增订阅</a-button>
+            <a-button size="small" @click="openImportModal()">导入</a-button>
+          </div>
+          <div class="probe-target-row">
+            <a-input
+              v-model:value="probeTargetURL"
+              size="small"
+              placeholder="临时探测 URL，留空使用默认"
+            />
           </div>
           <a-tabs v-model:activeKey="activeNodeTab" size="small">
             <a-tab-pane key="static" :tab="`静态 (${staticNodes.length})`">
@@ -2567,6 +2229,75 @@ onUnmounted(() => {
                 </div>
                 <div v-if="filteredSubscriptionNodes(subscription).length === 0" class="empty-line">
                   无可用节点缓存
+                </div>
+              </div>
+            </a-tab-pane>
+
+            <a-tab-pane
+              v-for="group in importedGroups"
+              :key="`import.${group.key}`"
+              :tab="`${group.name} (${arrayOrEmpty(group.nodes).length})`"
+            >
+              <div class="tab-toolbar">
+                <a-input
+                  :value="listSearch[`import.${group.key}`] || ''"
+                  size="small"
+                  :placeholder="`搜索 ${group.name}`"
+                  @change="(event: Event) => setListQuery(`import.${group.key}`, (event.target as HTMLInputElement).value)"
+                />
+                <div class="toolbar-actions">
+                  <a-tag color="cyan">{{ group.source }}</a-tag>
+                  <a-button size="small" @click="openImportModal(group)">重新导入</a-button>
+                  <a-button size="small" danger @click="removeImportedGroup(group)">删除</a-button>
+                  <a-button
+                    size="small"
+                    :loading="probingGroup === `import.${group.key}`"
+                    :disabled="arrayOrEmpty(group.nodes).length === 0"
+                    @click="probeNodes(`import.${group.key}`, arrayOrEmpty(group.nodes))"
+                  >
+                    探测
+                  </a-button>
+                </div>
+              </div>
+              <a-alert
+                v-if="group.error"
+                class="mini-alert"
+                :message="group.error"
+                type="warning"
+                show-icon
+              />
+              <div class="tab-body">
+                <div
+                  v-for="node in filteredImportedNodes(group)"
+                  :key="node.tag"
+                  class="node-list-row"
+                >
+                  <button
+                    class="node-item"
+                    :class="{ active: node.tag === selectedTag }"
+                    type="button"
+                    @click="selectNode(node)"
+                  >
+                    <div class="node-title">
+                      <a-tag :color="protocolColor(node)">{{ node.protocol.toUpperCase() }}</a-tag>
+                      <span>{{ node.name || node.tag }}</span>
+                    </div>
+                    <small>{{ nodeSubtitle(node) }}</small>
+                    <em>{{ nodeDelayText(node) }}</em>
+                  </button>
+                  <div class="row-actions">
+                    <a-button
+                      size="small"
+                      :loading="probingSeriesTag === node.tag"
+                      :disabled="probingSeriesTag !== '' && probingSeriesTag !== node.tag"
+                      @click="openProbeModal(node)"
+                    >
+                      探测
+                    </a-button>
+                  </div>
+                </div>
+                <div v-if="filteredImportedNodes(group).length === 0" class="empty-line">
+                  无可用导入节点
                 </div>
               </div>
             </a-tab-pane>
@@ -2827,7 +2558,7 @@ onUnmounted(() => {
                   size="small"
                   :min="1"
                   :value="currentProbeSeriesCount(probeModalNode.tag)"
-                  @change="(value: number | null) => probeModalNode && setProbeSeriesCount(probeModalNode.tag, value)"
+                  @update:value="(value: number | null) => probeModalNode && setProbeSeriesCount(probeModalNode.tag, value)"
                 />
                 <a-button
                   size="small"
@@ -2838,6 +2569,13 @@ onUnmounted(() => {
                 >
                   开始
                 </a-button>
+              </div>
+              <div class="probe-target-row probe-modal-target-row">
+                <a-input
+                  v-model:value="probeModalTargetURL"
+                  size="small"
+                  placeholder="临时探测 URL，留空使用默认"
+                />
               </div>
               <div class="probe-popover-results probe-modal-results">
                 <div
@@ -2866,6 +2604,8 @@ onUnmounted(() => {
                   <a-select-option value="ss">SS</a-select-option>
                   <a-select-option value="trojan">Trojan</a-select-option>
                   <a-select-option value="anytls">AnyTLS</a-select-option>
+                  <a-select-option value="socks">SOCKS5</a-select-option>
+                  <a-select-option value="http">HTTP</a-select-option>
                 </a-select>
               </label>
               <label class="field-row">
@@ -2884,6 +2624,14 @@ onUnmounted(() => {
                 <span>port</span>
                 <a-input v-model:value="staticForm.port" type="number" />
               </label>
+              <div class="field-row">
+                <span>detour</span>
+                <div class="outbound-target-row">
+                  <span>{{ detourLabel(staticForm.detour) }}</span>
+                  <a-button size="small" @click="staticDetourModalOpen = true">选择</a-button>
+                  <a-button size="small" @click="clearStaticDetour">清空</a-button>
+                </div>
+              </div>
               <label
                 v-if="staticForm.protocol === 'hy2' || staticForm.protocol === 'trojan' || staticForm.protocol === 'anytls'"
                 class="field-row"
@@ -2891,7 +2639,17 @@ onUnmounted(() => {
                 <span>password</span>
                 <a-input v-model:value="staticForm.password" />
               </label>
-              <label v-if="staticForm.protocol !== 'ss'" class="field-row">
+              <template v-if="staticForm.protocol === 'socks' || staticForm.protocol === 'http'">
+                <label class="field-row">
+                  <span>username</span>
+                  <a-input v-model:value="staticForm.username" />
+                </label>
+                <label class="field-row">
+                  <span>password</span>
+                  <a-input v-model:value="staticForm.password" />
+                </label>
+              </template>
+              <label v-if="staticForm.protocol !== 'ss' && staticForm.protocol !== 'socks' && staticForm.protocol !== 'http'" class="field-row">
                 <span>sni</span>
                 <a-input v-model:value="staticForm.sni" />
               </label>
@@ -2966,11 +2724,47 @@ onUnmounted(() => {
                   <a-input v-model:value="staticForm.plugin_opts" placeholder="obfs=http;obfs-host=example.com" />
                 </label>
               </template>
-              <label v-if="staticForm.protocol !== 'ss'" class="field-row inline-field">
+              <label v-if="staticForm.protocol !== 'ss' && staticForm.protocol !== 'socks' && staticForm.protocol !== 'http'" class="field-row inline-field">
                 <span>insecure</span>
                 <a-switch v-model:checked="staticForm.insecure" size="small" />
               </label>
             </div>
+            <a-modal
+              v-model:open="staticDetourModalOpen"
+              title="选择 detour"
+              :footer="null"
+              width="720px"
+            >
+              <a-tabs
+                v-model:activeKey="activeDetourSourceKey"
+                class="member-source-tabs member-modal-tabs"
+                tab-position="left"
+                size="small"
+              >
+                <a-tab-pane
+                  v-for="source in detourSourceGroups"
+                  :key="source.key"
+                  :tab="`${source.name} (${arrayOrEmpty(source.nodes).length})`"
+                >
+                  <div class="member-list">
+                    <button
+                      v-for="option in arrayOrEmpty(source.nodes)"
+                      :key="option.ref"
+                      class="outbound-option"
+                      :class="{ active: option.ref === staticForm.detour }"
+                      type="button"
+                      @click="selectStaticDetour(option.ref); staticDetourModalOpen = false"
+                    >
+                      <span>
+                        <strong>{{ option.label }}</strong>
+                        <small>{{ option.protocol.toUpperCase() }} {{ option.subtitle }}</small>
+                      </span>
+                    </button>
+                    <div v-if="arrayOrEmpty(source.nodes).length === 0" class="empty-line">无可选 detour</div>
+                  </div>
+                </a-tab-pane>
+              </a-tabs>
+            </a-modal>
           </a-modal>
           <a-modal
             v-model:open="subscriptionModalOpen"
@@ -3009,6 +2803,50 @@ onUnmounted(() => {
               </label>
             </div>
           </a-modal>
+          <a-modal
+            v-model:open="importModalOpen"
+            title="导入节点"
+            width="680px"
+            ok-text="提取并替换"
+            :confirm-loading="importingNodes"
+            @ok="submitImport"
+          >
+            <div class="form-grid">
+              <label class="field-row">
+                <span>source</span>
+                <a-select v-model:value="importForm.source">
+                  <a-select-option value="clash">clash</a-select-option>
+                </a-select>
+              </label>
+              <label class="field-row">
+                <span>组 key</span>
+                <a-input v-model:value="importForm.key" placeholder="main-import" />
+              </label>
+              <label class="field-row">
+                <span>名称</span>
+                <a-input v-model:value="importForm.name" placeholder="Clash 导入" />
+              </label>
+              <label class="field-row wide-field import-file-field">
+                <span>文件</span>
+                <input
+                  class="import-file-input"
+                  type="file"
+                  accept=".yaml,.yml,text/yaml,text/x-yaml,text/plain"
+                  @change="loadImportFile"
+                />
+                <small v-if="importFileName">{{ importFileName }}</small>
+              </label>
+              <label class="field-row wide-field import-content-field">
+                <span>配置内容</span>
+                <a-textarea
+                  v-model:value="importForm.content"
+                  class="import-textarea"
+                  spellcheck="false"
+                  placeholder="粘贴 Clash YAML，读取 proxies 字段"
+                />
+              </label>
+            </div>
+          </a-modal>
         </section>
       </aside>
 
@@ -3039,6 +2877,15 @@ onUnmounted(() => {
                   <span>mixed port</span>
                   <a-input-number v-model:value="mixedPort" :min="1" :max="65535" />
                 </label>
+                <label class="field-row wide-field">
+                  <span>TUN 排除网段</span>
+                  <a-textarea
+                    v-model:value="tunRouteExcludeAddressText"
+                    class="rule-textarea compact-textarea"
+                    placeholder="10.10.0.0/16&#10;172.16.1.0/24&#10;192.0.2.10"
+                    :auto-size="{ minRows: 3, maxRows: 8 }"
+                  />
+                </label>
               </div>
             </div>
           </a-tab-pane>
@@ -3068,6 +2915,69 @@ onUnmounted(() => {
                 class="rule-textarea"
                 spellcheck="false"
               />
+            </div>
+          </a-tab-pane>
+
+          <a-tab-pane key="overrides" :tab="`静态跳转 (${overrides.length})`">
+            <div class="rule-pane dynamic-outbound-pane">
+              <div class="tab-toolbar">
+                <span>命中目标后改写到固定地址端口</span>
+                <a-button size="small" @click="addOverrideRule">添加</a-button>
+              </div>
+              <div class="dynamic-outbound-layout">
+                <div class="dynamic-rule-list">
+                  <button
+                    v-for="(rule, index) in overrides"
+                    :key="`${rule.key}-${index}`"
+                    class="dynamic-rule-item"
+                    :class="{ active: index === selectedOverrideIndex }"
+                    type="button"
+										@click="selectOverrideRule(index)"
+									>
+										<strong>{{ rule.match || '未填写匹配' }}</strong>
+										<small>{{ rule.enabled === false ? '已停用' : overrideTargetText(rule) }}</small>
+									</button>
+									<div v-if="overrides.length === 0" class="empty-line">无静态跳转规则</div>
+								</div>
+
+                <section v-if="selectedOverrideRule" class="dynamic-outbound-editor">
+                  <div class="pane-title">
+                    <strong>跳转配置</strong>
+                    <div class="pane-actions">
+                      <a-switch
+                        :checked="selectedOverrideRule.enabled !== false"
+                        checked-children="已启用"
+                        un-checked-children="已停用"
+                        @change="(checked: boolean) => updateSelectedOverrideEnabled(checked)"
+                      />
+                      <a-button size="small" danger @click="removeSelectedOverrideRule">删除</a-button>
+                    </div>
+                  </div>
+                  <a-input
+                    :value="selectedOverrideRule.key"
+                    placeholder="规则 key，例如 example-local"
+                    @change="(event: Event) => updateSelectedOverrideKey((event.target as HTMLInputElement).value)"
+                  />
+                  <a-input
+									:value="selectedOverrideRule.match"
+									placeholder="domain:example.com"
+									@change="(event: Event) => updateSelectedOverrideMatch((event.target as HTMLInputElement).value)"
+								/>
+								<div class="override-target-row">
+									<a-input
+										:value="selectedOverrideRule.address"
+										placeholder="127.0.0.1"
+										@change="(event: Event) => updateSelectedOverrideAddress((event.target as HTMLInputElement).value)"
+									/>
+									<a-input
+										class="override-port-input"
+										:value="selectedOverrideRule.port || ''"
+										placeholder="端口"
+										@change="(event: Event) => updateSelectedOverridePort((event.target as HTMLInputElement).value)"
+									/>
+								</div>
+							</section>
+              </div>
             </div>
           </a-tab-pane>
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -350,6 +351,38 @@ func TestBuildSingBoxConfigSkipsHostsDNSWhenDisabled(t *testing.T) {
 	}
 }
 
+// TestBuildSingBoxConfigIncludesOverrideRule 验证静态跳转规则会生成目标改写路由。
+func TestBuildSingBoxConfigIncludesOverrideRule(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Policy.Overrides = []OverrideRule{{
+		Key:      "example-local",
+		Match:    "domain:example.com",
+		Address:  "127.0.0.1",
+		Port:     10820,
+		Outbound: "direct",
+		Enabled:  boolPtr(true),
+	}}
+	app := &App{}
+	doc, err := app.BuildSingBoxConfig(cfg, []ProxyBackend{
+		&HY2Backend{Tag: "hy2-a", Server: "example.com", Port: 443, Password: "p"},
+	}, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := doc["route"].(map[string]any)
+	rule := findMapByString(route["rules"].([]map[string]any), "override_address", "127.0.0.1")
+	if rule == nil {
+		t.Fatal("未生成静态跳转规则")
+	}
+	if rule["override_port"] != 10820 || rule["outbound"] != "direct" {
+		t.Fatalf("静态跳转目标错误: %+v", rule)
+	}
+	domains := rule["domain"].([]string)
+	if len(domains) != 1 || domains[0] != "example.com" {
+		t.Fatalf("静态跳转域名错误: %+v", rule)
+	}
+}
+
 // TestBuildTrojanOutbound 验证 Trojan 节点生成 sing-box 出站配置。
 func TestBuildTrojanOutbound(t *testing.T) {
 	out := BuildTrojanOutbound(TrojanBackend{
@@ -527,6 +560,21 @@ func TestBuildInboundsDefaultTun(t *testing.T) {
 	}
 }
 
+// TestBuildInboundsTunRouteExcludeAddress 验证 TUN 入站会写入捕获排除地址。
+func TestBuildInboundsTunRouteExcludeAddress(t *testing.T) {
+	inbounds := BuildInbounds(InboundConfig{
+		Mode: "tun",
+		Tun: TunInboundConfig{
+			RouteExcludeAddress: []string{"10.10.0.0/16", "192.0.2.10"},
+		},
+	})
+	got := inbounds[0]["route_exclude_address"].([]string)
+	want := []string{"10.10.0.0/16", "192.0.2.10"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("TUN 排除地址生成错误: %#v", got)
+	}
+}
+
 // TestBuildInboundsMixed 验证 mixed 模式会生成 socks/http 混合端口。
 func TestBuildInboundsMixed(t *testing.T) {
 	inbounds := BuildInbounds(InboundConfig{
@@ -552,15 +600,20 @@ func TestBuildInboundsMixed(t *testing.T) {
 func TestApplyWebInboundConfig(t *testing.T) {
 	cfg := DefaultConfig()
 	err := ApplyWebInboundConfig(&cfg, WebInboundConfig{
-		InboundMode: "mixed",
-		MixedListen: "127.0.0.1",
-		MixedPort:   2080,
+		InboundMode:            "mixed",
+		TunRouteExcludeAddress: []string{"10.10.0.0/16", "10.10.0.0/16", "192.0.2.10"},
+		MixedListen:            "127.0.0.1",
+		MixedPort:              2080,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Inbound.Mode != "mixed" || cfg.Inbound.Mixed.Listen != "127.0.0.1" || cfg.Inbound.Mixed.Port != 2080 {
 		t.Fatalf("mixed 监听保存错误: %+v", cfg.Inbound)
+	}
+	wantExclude := []string{"10.10.0.0/16", "192.0.2.10"}
+	if !reflect.DeepEqual(cfg.Inbound.Tun.RouteExcludeAddress, wantExclude) {
+		t.Fatalf("TUN 排除地址保存错误: %#v", cfg.Inbound.Tun.RouteExcludeAddress)
 	}
 }
 
@@ -834,6 +887,25 @@ func TestBuildDynamicGroupOutbound(t *testing.T) {
 	}
 }
 
+// TestResolveMemberTagMapIncludesImports 验证导入节点能被动态组探测解析。
+func TestResolveMemberTagMapIncludesImports(t *testing.T) {
+	dir := t.TempDir()
+	app := &App{SubscriptionDir: filepath.Join(dir, "sub")}
+	if _, err := app.SaveSubscriptionCache("frank", []ProxyBackend{
+		&HY2Backend{Key: "kr", Server: "kr.example", Port: 443, Password: "p"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{Backend: BackendConfig{Imports: []ImportedNodeGroup{{Key: "frank", Source: "clash"}}}}
+	refs, err := app.ResolveMemberTagMap(&cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refs["import.frank.kr"] != "import-frank-kr" {
+		t.Fatalf("导入节点引用解析错误: %+v", refs)
+	}
+}
+
 // TestReferencedDynamicGroups 验证被当前出口和动态出口引用的组都会被探测。
 func TestReferencedDynamicGroups(t *testing.T) {
 	cfg := Config{}
@@ -923,8 +995,51 @@ func TestEvaluateGroupTargetPrimaryBackup(t *testing.T) {
 		},
 		"b": {{OK: true, DelayMS: 20}},
 	})
-	if best != "b" {
-		t.Fatalf("主节点最近一轮有失败时应该切换备节点: %s", best)
+	if best != "a" {
+		t.Fatalf("主节点最新一次恢复时应该回主节点: %s", best)
+	}
+	best = EvaluateGroupTarget(group, map[string][]GroupProbeRecord{
+		"a": {
+			{OK: false},
+			{OK: false},
+		},
+		"b": {{OK: true, DelayMS: 80}},
+		"c": {{OK: true, DelayMS: 20}},
+	})
+	if best != "c" {
+		t.Fatalf("完整探测结束后主未恢复时应该选择最优备节点: %s", best)
+	}
+}
+
+// TestEvaluatePrimaryBackupImmediateTarget 验证主节点单次失败后立刻选择可用备节点。
+func TestEvaluatePrimaryBackupImmediateTarget(t *testing.T) {
+	group := DynamicGroupConfig{
+		Key:     "main",
+		Mode:    dynamicGroupModePrimaryBackup,
+		Primary: "a",
+		Members: []string{"a", "b", "c"},
+	}
+	best := EvaluatePrimaryBackupImmediateTarget(group, map[string][]GroupProbeRecord{
+		"a": {{OK: false}},
+		"b": {{OK: true, DelayMS: 80}},
+		"c": {{OK: true, DelayMS: 20}},
+	})
+	if best != "c" {
+		t.Fatalf("主节点失败后应该立即选择最优备节点: %s", best)
+	}
+	best = EvaluatePrimaryBackupImmediateTarget(group, map[string][]GroupProbeRecord{
+		"a": {{OK: false}},
+		"b": {{OK: false}},
+	})
+	if best != "" {
+		t.Fatalf("没有成功备节点时不应立即切换: %s", best)
+	}
+	best = EvaluatePrimaryBackupImmediateTarget(group, map[string][]GroupProbeRecord{
+		"a": {{OK: true, DelayMS: 300}},
+		"b": {{OK: true, DelayMS: 20}},
+	})
+	if best != "" {
+		t.Fatalf("主节点成功时不应立即切换: %s", best)
 	}
 }
 
