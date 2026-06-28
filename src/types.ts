@@ -228,6 +228,8 @@ export interface InboundSettings {
   inbound_mode: string
   /** TUN 排除捕获的 IP/CIDR。 */
   tun_route_exclude_address: string[]
+  /** TUN 排除捕获的规则集 tag。 */
+  tun_route_exclude_address_set: string[]
   /** mixed 监听地址。 */
   mixed_listen: string
   /** mixed 监听端口。 */
