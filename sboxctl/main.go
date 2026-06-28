@@ -275,6 +275,8 @@ type InboundConfig struct {
 type TunInboundConfig struct {
 	// RouteExcludeAddress 是不交给 sing-box TUN 捕获的 IP/CIDR。
 	RouteExcludeAddress []string `yaml:"route_exclude_address"`
+	// RouteExcludeAddressSet 是不交给 sing-box TUN 捕获的规则集 tag。
+	RouteExcludeAddressSet []string `yaml:"route_exclude_address_set"`
 }
 
 // MixedInboundConfig 表示 mixed 入站配置，适用于非 TUN 手动代理。
@@ -1795,6 +1797,8 @@ type WebInboundConfig struct {
 	InboundMode string `json:"inbound_mode"`
 	// TunRouteExcludeAddress 是 TUN 入站排除捕获的 IP/CIDR。
 	TunRouteExcludeAddress []string `json:"tun_route_exclude_address"`
+	// TunRouteExcludeAddressSet 是 TUN 入站排除捕获的规则集 tag。
+	TunRouteExcludeAddressSet []string `json:"tun_route_exclude_address_set"`
 	// MixedListen 是 mixed 入站监听地址。
 	MixedListen string `json:"mixed_listen"`
 	// MixedPort 是 mixed 入站监听端口。
@@ -2349,6 +2353,8 @@ inbound:
   tun:
     route_exclude_address:
       # - cidr-or-ip
+    route_exclude_address_set:
+      # - geoip-cn
   mixed:
     listen: 0.0.0.0
     port: 1080
@@ -4243,10 +4249,11 @@ func (a *App) WebGeoFile(kind string, name string, cfg Config) WebGeoFile {
 func WebInboundFromConfig(cfg Config) WebInboundConfig {
 	MergeConfigDefaults(&cfg)
 	return WebInboundConfig{
-		InboundMode:            cfg.Inbound.Mode,
-		TunRouteExcludeAddress: append([]string(nil), cfg.Inbound.Tun.RouteExcludeAddress...),
-		MixedListen:            cfg.Inbound.Mixed.Listen,
-		MixedPort:              cfg.Inbound.Mixed.Port,
+		InboundMode:               cfg.Inbound.Mode,
+		TunRouteExcludeAddress:    append([]string(nil), cfg.Inbound.Tun.RouteExcludeAddress...),
+		TunRouteExcludeAddressSet: append([]string(nil), cfg.Inbound.Tun.RouteExcludeAddressSet...),
+		MixedListen:               cfg.Inbound.Mixed.Listen,
+		MixedPort:                 cfg.Inbound.Mixed.Port,
 	}
 }
 
@@ -4271,8 +4278,13 @@ func ApplyWebInboundConfig(cfg *Config, inbound WebInboundConfig) error {
 	if err != nil {
 		return err
 	}
+	tunRouteExcludeAddressSet, err := normalizeTunRouteExcludeAddressSet(inbound.TunRouteExcludeAddressSet, cfg.Inbound.Tun.RouteExcludeAddressSet)
+	if err != nil {
+		return err
+	}
 	cfg.Inbound.Mode = mode
 	cfg.Inbound.Tun.RouteExcludeAddress = tunRouteExcludeAddress
+	cfg.Inbound.Tun.RouteExcludeAddressSet = tunRouteExcludeAddressSet
 	cfg.Inbound.Mixed.Listen = mixedListen
 	cfg.Inbound.Mixed.Port = mixedPort
 	return nil
@@ -4282,6 +4294,7 @@ func ApplyWebInboundConfig(cfg *Config, inbound WebInboundConfig) error {
 func WebInboundConfigProvided(inbound WebInboundConfig) bool {
 	return strings.TrimSpace(inbound.InboundMode) != "" ||
 		len(inbound.TunRouteExcludeAddress) > 0 ||
+		len(inbound.TunRouteExcludeAddressSet) > 0 ||
 		strings.TrimSpace(inbound.MixedListen) != "" ||
 		inbound.MixedPort != 0
 }
@@ -4337,6 +4350,45 @@ func normalizeTunRouteExcludeItem(value string) (string, error) {
 		return addr.String(), nil
 	}
 	return "", fmt.Errorf("TUN 排除地址只支持 IP 或 CIDR: %s", value)
+}
+
+// normalizeTunRouteExcludeAddressSet 校验 TUN 捕获排除规则集。
+func normalizeTunRouteExcludeAddressSet(values []string, fallback []string) ([]string, error) {
+	if values == nil {
+		return append([]string(nil), fallback...), nil
+	}
+	result := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		item := strings.TrimSpace(value)
+		if item == "" {
+			continue
+		}
+		if !isKnownGeoRuleSet(item) {
+			return nil, fmt.Errorf("TUN 排除规则集不存在: %s", item)
+		}
+		if seen[item] {
+			continue
+		}
+		seen[item] = true
+		result = append(result, item)
+	}
+	return result, nil
+}
+
+// isKnownGeoRuleSet 判断 tag 是否为本机可生成的 geofile 规则集。
+func isKnownGeoRuleSet(tag string) bool {
+	for _, name := range geoIPNames {
+		if tag == "geoip-"+name {
+			return true
+		}
+	}
+	for _, name := range geoSiteNames {
+		if tag == "geosite-"+name {
+			return true
+		}
+	}
+	return false
 }
 
 // normalizeMixedListen 校验 mixed 监听地址，防止把 host:port 写进 host 字段。
@@ -6802,6 +6854,9 @@ func BuildInbounds(cfg InboundConfig) []map[string]any {
 	}
 	if len(cfg.Tun.RouteExcludeAddress) > 0 {
 		inbound["route_exclude_address"] = append([]string(nil), cfg.Tun.RouteExcludeAddress...)
+	}
+	if len(cfg.Tun.RouteExcludeAddressSet) > 0 {
+		inbound["route_exclude_address_set"] = append([]string(nil), cfg.Tun.RouteExcludeAddressSet...)
 	}
 	return []map[string]any{
 		inbound,
