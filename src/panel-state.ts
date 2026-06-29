@@ -293,6 +293,12 @@ export function normalizedPanelState(nextPanel: PanelState) {
 export function normalizeInboundSettings(value: InboundSettings | null | undefined) {
   return {
     inbound_mode: normalizedInboundMode(value?.inbound_mode || ''),
+    tun_route_exclude_address: arrayOrEmpty(value?.tun_route_exclude_address)
+      .map((item) => `${item}`.trim())
+      .filter(Boolean),
+    tun_route_exclude_address_set: arrayOrEmpty(value?.tun_route_exclude_address_set)
+      .map((item) => `${item}`.trim())
+      .filter(Boolean),
     mixed_listen: value?.mixed_listen || '0.0.0.0',
     mixed_port: value?.mixed_port || 1080,
   }

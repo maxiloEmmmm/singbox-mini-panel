@@ -768,6 +768,11 @@ input {
   line-height: 1.5;
 }
 
+.compact-textarea {
+  height: auto !important;
+  min-height: 86px !important;
+}
+
 .singbox-config-view {
   min-height: 220px;
   height: 100%;

@@ -265,8 +265,18 @@ type ServiceConfig struct {
 type InboundConfig struct {
 	// Mode 是入口模式，支持 tun 和 mixed。
 	Mode string `yaml:"mode"`
+	// Tun 是 TUN 入站配置。
+	Tun TunInboundConfig `yaml:"tun"`
 	// Mixed 是 socks/http 混合端口配置。
 	Mixed MixedInboundConfig `yaml:"mixed"`
+}
+
+// TunInboundConfig 表示 TUN 入站配置，适用于透明代理旁路场景。
+type TunInboundConfig struct {
+	// RouteExcludeAddress 是不交给 sing-box TUN 捕获的 IP/CIDR。
+	RouteExcludeAddress []string `yaml:"route_exclude_address"`
+	// RouteExcludeAddressSet 是不交给 sing-box TUN 捕获的规则集 tag。
+	RouteExcludeAddressSet []string `yaml:"route_exclude_address_set"`
 }
 
 // MixedInboundConfig 表示 mixed 入站配置，适用于非 TUN 手动代理。
@@ -1785,6 +1795,10 @@ type WebGeoFile struct {
 type WebInboundConfig struct {
 	// InboundMode 是入口模式，支持 tun 和 mixed。
 	InboundMode string `json:"inbound_mode"`
+	// TunRouteExcludeAddress 是 TUN 入站排除捕获的 IP/CIDR。
+	TunRouteExcludeAddress []string `json:"tun_route_exclude_address"`
+	// TunRouteExcludeAddressSet 是 TUN 入站排除捕获的规则集 tag。
+	TunRouteExcludeAddressSet []string `json:"tun_route_exclude_address_set"`
 	// MixedListen 是 mixed 入站监听地址。
 	MixedListen string `json:"mixed_listen"`
 	// MixedPort 是 mixed 入站监听端口。
@@ -2336,6 +2350,11 @@ backend:
 
 inbound:
   mode: tun
+  tun:
+    route_exclude_address:
+      # - cidr-or-ip
+    route_exclude_address_set:
+      # - geoip-cn
   mixed:
     listen: 0.0.0.0
     port: 1080
@@ -4230,9 +4249,11 @@ func (a *App) WebGeoFile(kind string, name string, cfg Config) WebGeoFile {
 func WebInboundFromConfig(cfg Config) WebInboundConfig {
 	MergeConfigDefaults(&cfg)
 	return WebInboundConfig{
-		InboundMode: cfg.Inbound.Mode,
-		MixedListen: cfg.Inbound.Mixed.Listen,
-		MixedPort:   cfg.Inbound.Mixed.Port,
+		InboundMode:               cfg.Inbound.Mode,
+		TunRouteExcludeAddress:    append([]string(nil), cfg.Inbound.Tun.RouteExcludeAddress...),
+		TunRouteExcludeAddressSet: append([]string(nil), cfg.Inbound.Tun.RouteExcludeAddressSet...),
+		MixedListen:               cfg.Inbound.Mixed.Listen,
+		MixedPort:                 cfg.Inbound.Mixed.Port,
 	}
 }
 
@@ -4253,7 +4274,17 @@ func ApplyWebInboundConfig(cfg *Config, inbound WebInboundConfig) error {
 	if err != nil {
 		return err
 	}
+	tunRouteExcludeAddress, err := normalizeTunRouteExcludeAddress(inbound.TunRouteExcludeAddress, cfg.Inbound.Tun.RouteExcludeAddress)
+	if err != nil {
+		return err
+	}
+	tunRouteExcludeAddressSet, err := normalizeTunRouteExcludeAddressSet(inbound.TunRouteExcludeAddressSet, cfg.Inbound.Tun.RouteExcludeAddressSet)
+	if err != nil {
+		return err
+	}
 	cfg.Inbound.Mode = mode
+	cfg.Inbound.Tun.RouteExcludeAddress = tunRouteExcludeAddress
+	cfg.Inbound.Tun.RouteExcludeAddressSet = tunRouteExcludeAddressSet
 	cfg.Inbound.Mixed.Listen = mixedListen
 	cfg.Inbound.Mixed.Port = mixedPort
 	return nil
@@ -4262,6 +4293,8 @@ func ApplyWebInboundConfig(cfg *Config, inbound WebInboundConfig) error {
 // WebInboundConfigProvided 判断旧前端保存请求是否携带入口配置。
 func WebInboundConfigProvided(inbound WebInboundConfig) bool {
 	return strings.TrimSpace(inbound.InboundMode) != "" ||
+		len(inbound.TunRouteExcludeAddress) > 0 ||
+		len(inbound.TunRouteExcludeAddressSet) > 0 ||
 		strings.TrimSpace(inbound.MixedListen) != "" ||
 		inbound.MixedPort != 0
 }
@@ -4281,6 +4314,81 @@ func normalizeInboundMode(value string, fallback string) (string, error) {
 	default:
 		return "", fmt.Errorf("入口模式不支持: %s", mode)
 	}
+}
+
+// normalizeTunRouteExcludeAddress 校验 TUN 捕获排除地址。
+func normalizeTunRouteExcludeAddress(values []string, fallback []string) ([]string, error) {
+	if values == nil {
+		return append([]string(nil), fallback...), nil
+	}
+	result := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		item := strings.TrimSpace(value)
+		if item == "" {
+			continue
+		}
+		normalized, err := normalizeTunRouteExcludeItem(item)
+		if err != nil {
+			return nil, err
+		}
+		if seen[normalized] {
+			continue
+		}
+		seen[normalized] = true
+		result = append(result, normalized)
+	}
+	return result, nil
+}
+
+// normalizeTunRouteExcludeItem 校验单个 TUN 捕获排除项。
+func normalizeTunRouteExcludeItem(value string) (string, error) {
+	if prefix, err := netip.ParsePrefix(value); err == nil {
+		return prefix.String(), nil
+	}
+	if addr, err := netip.ParseAddr(value); err == nil {
+		return addr.String(), nil
+	}
+	return "", fmt.Errorf("TUN 排除地址只支持 IP 或 CIDR: %s", value)
+}
+
+// normalizeTunRouteExcludeAddressSet 校验 TUN 捕获排除规则集。
+func normalizeTunRouteExcludeAddressSet(values []string, fallback []string) ([]string, error) {
+	if values == nil {
+		return append([]string(nil), fallback...), nil
+	}
+	result := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		item := strings.TrimSpace(value)
+		if item == "" {
+			continue
+		}
+		if !isKnownGeoRuleSet(item) {
+			return nil, fmt.Errorf("TUN 排除规则集不存在: %s", item)
+		}
+		if seen[item] {
+			continue
+		}
+		seen[item] = true
+		result = append(result, item)
+	}
+	return result, nil
+}
+
+// isKnownGeoRuleSet 判断 tag 是否为本机可生成的 geofile 规则集。
+func isKnownGeoRuleSet(tag string) bool {
+	for _, name := range geoIPNames {
+		if tag == "geoip-"+name {
+			return true
+		}
+	}
+	for _, name := range geoSiteNames {
+		if tag == "geosite-"+name {
+			return true
+		}
+	}
+	return false
 }
 
 // normalizeMixedListen 校验 mixed 监听地址，防止把 host:port 写进 host 字段。
@@ -6734,17 +6842,24 @@ func BuildInbounds(cfg InboundConfig) []map[string]any {
 		}
 		return []map[string]any{inbound}
 	}
+	inbound := map[string]any{
+		"type":           "tun",
+		"tag":            "tun-in",
+		"interface_name": "sbox0",
+		"address":        []string{"172.19.0.1/30"},
+		"auto_route":     true,
+		"auto_redirect":  true,
+		"strict_route":   true,
+		"stack":          "mixed",
+	}
+	if len(cfg.Tun.RouteExcludeAddress) > 0 {
+		inbound["route_exclude_address"] = append([]string(nil), cfg.Tun.RouteExcludeAddress...)
+	}
+	if len(cfg.Tun.RouteExcludeAddressSet) > 0 {
+		inbound["route_exclude_address_set"] = append([]string(nil), cfg.Tun.RouteExcludeAddressSet...)
+	}
 	return []map[string]any{
-		{
-			"type":           "tun",
-			"tag":            "tun-in",
-			"interface_name": "sbox0",
-			"address":        []string{"172.19.0.1/30"},
-			"auto_route":     true,
-			"auto_redirect":  true,
-			"strict_route":   true,
-			"stack":          "mixed",
-		},
+		inbound,
 	}
 }
 
