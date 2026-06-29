@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	defaultListenAddr = "127.0.0.1:10820"
+	defaultListenAddr = "0.0.0.0:10820"
 	defaultTimeout    = 30 * time.Second
 	defaultCacheTTL   = 120 * time.Second
 	envDomainName     = "MINI_DOMAIN"
