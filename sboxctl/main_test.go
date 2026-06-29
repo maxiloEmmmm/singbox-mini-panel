@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -559,6 +560,21 @@ func TestBuildInboundsDefaultTun(t *testing.T) {
 	}
 }
 
+// TestBuildInboundsTunRouteExcludeAddress 验证 TUN 入站会写入捕获排除地址。
+func TestBuildInboundsTunRouteExcludeAddress(t *testing.T) {
+	inbounds := BuildInbounds(InboundConfig{
+		Mode: "tun",
+		Tun: TunInboundConfig{
+			RouteExcludeAddress: []string{"10.10.0.0/16", "192.0.2.10"},
+		},
+	})
+	got := inbounds[0]["route_exclude_address"].([]string)
+	want := []string{"10.10.0.0/16", "192.0.2.10"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("TUN 排除地址生成错误: %#v", got)
+	}
+}
+
 // TestBuildInboundsMixed 验证 mixed 模式会生成 socks/http 混合端口。
 func TestBuildInboundsMixed(t *testing.T) {
 	inbounds := BuildInbounds(InboundConfig{
@@ -584,15 +600,20 @@ func TestBuildInboundsMixed(t *testing.T) {
 func TestApplyWebInboundConfig(t *testing.T) {
 	cfg := DefaultConfig()
 	err := ApplyWebInboundConfig(&cfg, WebInboundConfig{
-		InboundMode: "mixed",
-		MixedListen: "127.0.0.1",
-		MixedPort:   2080,
+		InboundMode:            "mixed",
+		TunRouteExcludeAddress: []string{"10.10.0.0/16", "10.10.0.0/16", "192.0.2.10"},
+		MixedListen:            "127.0.0.1",
+		MixedPort:              2080,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Inbound.Mode != "mixed" || cfg.Inbound.Mixed.Listen != "127.0.0.1" || cfg.Inbound.Mixed.Port != 2080 {
 		t.Fatalf("mixed 监听保存错误: %+v", cfg.Inbound)
+	}
+	wantExclude := []string{"10.10.0.0/16", "192.0.2.10"}
+	if !reflect.DeepEqual(cfg.Inbound.Tun.RouteExcludeAddress, wantExclude) {
+		t.Fatalf("TUN 排除地址保存错误: %#v", cfg.Inbound.Tun.RouteExcludeAddress)
 	}
 }
 

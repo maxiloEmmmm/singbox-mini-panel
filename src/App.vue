@@ -79,6 +79,8 @@ const selectedOverrideIndex = ref(0)
 const forceProxy = ref('')
 const forceDirect = ref('')
 const inboundMode = ref('tun')
+const tunRouteExcludeAddressText = ref('')
+const tunRouteExcludeAddressSetText = ref('')
 const mixedListen = ref('0.0.0.0')
 const mixedPort = ref(1080)
 const serviceEnabled = ref(true)
@@ -87,6 +89,8 @@ const savedSelectedTag = ref('')
 const savedForceProxy = ref('')
 const savedForceDirect = ref('')
 const savedInboundMode = ref('tun')
+const savedTunRouteExcludeAddressText = ref('')
+const savedTunRouteExcludeAddressSetText = ref('')
 const savedMixedListen = ref('0.0.0.0')
 const savedMixedPort = ref(1080)
 const savedServiceEnabled = ref(true)
@@ -303,6 +307,33 @@ const outboundSourceGroups = computed<MemberSourceGroup[]>(() => {
   }
   return groups
 })
+
+// 适用场景：把 TUN 排除地址多行文本转成后端数组。
+function parseTunRouteExcludeAddressText(value: string) {
+  return value
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+// 适用场景：把后端 TUN 排除地址数组展示成多行文本。
+function formatTunRouteExcludeAddressText(values: string[] | null | undefined) {
+  return arrayOrEmpty(values).join('\n')
+}
+
+// 适用场景：把 TUN 排除规则集多行文本转成后端数组。
+function parseTunRouteExcludeAddressSetText(value: string) {
+  return value
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+// 适用场景：把后端 TUN 排除规则集数组展示成多行文本。
+function formatTunRouteExcludeAddressSetText(values: string[] | null | undefined) {
+  return arrayOrEmpty(values).join('\n')
+}
+
 const hasChanges = computed(() => {
   return (
     selectedTag.value !== savedSelectedTag.value ||
@@ -315,6 +346,8 @@ const hasChanges = computed(() => {
     forceProxy.value !== savedForceProxy.value ||
     forceDirect.value !== savedForceDirect.value ||
     inboundMode.value !== savedInboundMode.value ||
+    tunRouteExcludeAddressText.value !== savedTunRouteExcludeAddressText.value ||
+    tunRouteExcludeAddressSetText.value !== savedTunRouteExcludeAddressSetText.value ||
     mixedListen.value !== savedMixedListen.value ||
     Number(mixedPort.value) !== Number(savedMixedPort.value) ||
     serviceEnabled.value !== savedServiceEnabled.value ||
@@ -369,6 +402,8 @@ function applyPanelState(nextPanel: PanelState) {
   forceProxy.value = nextPanel.force_proxy
   forceDirect.value = nextPanel.force_direct
   inboundMode.value = normalizedInboundMode(nextPanel.inbound?.inbound_mode)
+  tunRouteExcludeAddressText.value = formatTunRouteExcludeAddressText(nextPanel.inbound?.tun_route_exclude_address)
+  tunRouteExcludeAddressSetText.value = formatTunRouteExcludeAddressSetText(nextPanel.inbound?.tun_route_exclude_address_set)
   mixedListen.value = nextPanel.inbound?.mixed_listen || '0.0.0.0'
   mixedPort.value = nextPanel.inbound?.mixed_port || 1080
   serviceEnabled.value = nextPanel.health.service_enabled !== false
@@ -388,6 +423,8 @@ function applyPanelState(nextPanel: PanelState) {
   savedForceProxy.value = forceProxy.value
   savedForceDirect.value = forceDirect.value
   savedInboundMode.value = inboundMode.value
+  savedTunRouteExcludeAddressText.value = tunRouteExcludeAddressText.value
+  savedTunRouteExcludeAddressSetText.value = tunRouteExcludeAddressSetText.value
   savedMixedListen.value = mixedListen.value
   savedMixedPort.value = Number(mixedPort.value)
   savedServiceEnabled.value = serviceEnabled.value
@@ -1705,6 +1742,8 @@ async function saveAll(confirmOverwrite: boolean | Event = false) {
         })),
         inbound: {
           inbound_mode: normalizedInboundMode(inboundMode.value),
+          tun_route_exclude_address: parseTunRouteExcludeAddressText(tunRouteExcludeAddressText.value),
+          tun_route_exclude_address_set: parseTunRouteExcludeAddressSetText(tunRouteExcludeAddressSetText.value),
           mixed_listen: mixedListen.value,
           mixed_port: Number(mixedPort.value),
         },
@@ -2856,6 +2895,24 @@ onUnmounted(() => {
                 <label class="field-row">
                   <span>mixed port</span>
                   <a-input-number v-model:value="mixedPort" :min="1" :max="65535" />
+                </label>
+                <label class="field-row wide-field">
+                  <span>TUN 排除网段</span>
+                  <a-textarea
+                    v-model:value="tunRouteExcludeAddressText"
+                    class="rule-textarea compact-textarea"
+                    placeholder="10.10.0.0/16&#10;172.16.1.0/24&#10;192.0.2.10"
+                    :auto-size="{ minRows: 3, maxRows: 8 }"
+                  />
+                </label>
+                <label class="field-row wide-field">
+                  <span>TUN 排除规则集</span>
+                  <a-textarea
+                    v-model:value="tunRouteExcludeAddressSetText"
+                    class="rule-textarea compact-textarea"
+                    placeholder="geoip-cn"
+                    :auto-size="{ minRows: 2, maxRows: 6 }"
+                  />
                 </label>
               </div>
             </div>

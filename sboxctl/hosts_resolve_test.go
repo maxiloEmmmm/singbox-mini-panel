@@ -13,9 +13,9 @@ func TestParseHostsDomains(t *testing.T) {
 		"# ignored",
 		"127.0.0.1 localhost localhost.localdomain",
 		"not-ip ignored.example",
-		"192.168.31.33 jira.wycx.com jira.wycx.com.",
+		"192.0.2.33 app.example.test app.example.test.",
 		"::1 ip6-localhost # inline comment",
-		"192.168.31.34 jira.wycx.com",
+		"192.0.2.34 app.example.test",
 	}, "\n")
 
 	got, err := ParseHostsDomains(strings.NewReader(content))
@@ -26,7 +26,7 @@ func TestParseHostsDomains(t *testing.T) {
 	want := []string{
 		"localhost",
 		"localhost.localdomain",
-		"jira.wycx.com",
+		"app.example.test",
 		"ip6-localhost",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -40,7 +40,7 @@ func TestBuildHostsResolveRouteRule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTemp() error = %v", err)
 	}
-	if _, err := file.WriteString("192.168.31.33 jira.wycx.com\n"); err != nil {
+	if _, err := file.WriteString("192.0.2.33 app.example.test\n"); err != nil {
 		t.Fatalf("WriteString() error = %v", err)
 	}
 	if err := file.Close(); err != nil {
@@ -54,7 +54,7 @@ func TestBuildHostsResolveRouteRule(t *testing.T) {
 
 	want := map[string]any{
 		"action": "resolve",
-		"domain": []string{"jira.wycx.com"},
+		"domain": []string{"app.example.test"},
 		"server": defaultHostsDNSTag,
 	}
 	if !reflect.DeepEqual(got, want) {
