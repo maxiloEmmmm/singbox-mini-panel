@@ -76,7 +76,12 @@ const (
 	singBoxReadyTimeout        = 500 * time.Millisecond
 )
 
-var groupProbeDelays = []time.Duration{5 * time.Second, 30 * time.Second, 60 * time.Second}
+var (
+	groupProbeDelays        = []time.Duration{5 * time.Second, 30 * time.Second, 60 * time.Second}
+	logTriggerBackoffDelays = []time.Duration{3 * time.Second, 10 * time.Second, 30 * time.Second, 60 * time.Second}
+	logConnIDRegexp         = regexp.MustCompile(`^\[(\d+)\s+[^]]+\]`)
+	logOutboundRegexp       = regexp.MustCompile(`outbound/[^[]+\[([^]]+)\]`)
+)
 
 // Version 是编译期注入的编排器版本，未注入时显示 dev。
 var Version = "dev"
@@ -1499,6 +1504,8 @@ type App struct {
 	HTTPClient *http.Client
 	// GroupRuntime 保存动态组内存探测状态。
 	GroupRuntime *GroupRuntime
+	// DynamicProbeMutex 串行化动态组探测，避免多个触发源同时切换。
+	DynamicProbeMutex sync.Mutex
 	// SingBoxMutex 保护 sing-box 子进程句柄。
 	SingBoxMutex sync.Mutex
 	// SingBoxCmd 是当前由编排器托管的 sing-box 子进程。
@@ -1513,6 +1520,44 @@ type App struct {
 	SingBoxRestarting bool
 	// SingBoxBackoff 保存异常退出后的重拉退避。
 	SingBoxBackoff time.Duration
+	// LogProbeTrigger 保存日志异常触发动态组探测的退避状态。
+	LogProbeTrigger LogProbeTriggerState
+}
+
+// LogProbeTriggerState 表示日志触发探测状态，适用于抑制异常风暴。
+type LogProbeTriggerState struct {
+	// Mutex 保护退避和运行标记。
+	Mutex sync.Mutex
+	// LastTriggeredAt 是上一次允许触发探测的时间。
+	LastTriggeredAt time.Time
+	// LastErrorAt 是最近一次看到可触发异常的时间。
+	LastErrorAt time.Time
+	// BackoffIndex 是当前使用的退避档位下标。
+	BackoffIndex int
+	// Running 表示日志触发的动态组探测正在执行。
+	Running bool
+}
+
+// clashLogEntry 表示 Clash API /logs 返回的一行 JSON。
+type clashLogEntry struct {
+	// Type 是日志级别，如 info 或 error。
+	Type string `json:"type"`
+	// Payload 是 sing-box 简化后的日志正文。
+	Payload string `json:"payload"`
+}
+
+// ClashLogTracker 保存短期连接归因，适用于 error 行缺少 outbound tag。
+type ClashLogTracker struct {
+	// Tags 保存 connID 到 outbound tag 的映射。
+	Tags map[string]trackedOutboundTag
+}
+
+// trackedOutboundTag 表示连接 ID 对应的 outbound tag。
+type trackedOutboundTag struct {
+	// Tag 是连接使用的 outbound tag。
+	Tag string
+	// SeenAt 是记录创建时间，用于淘汰旧连接。
+	SeenAt time.Time
 }
 
 // GroupRuntime 表示动态组内存运行状态。
@@ -2821,6 +2866,7 @@ func (a *App) Daemon() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go a.RunDynamicGroupProber(ctx)
+	go a.RunClashLogProbeTrigger(ctx)
 	var webServer *WebServer
 	if cfg.Web.Enabled {
 		webServer, err = a.StartWebServer(cfg)
@@ -2891,6 +2937,8 @@ func (a *App) RunDynamicGroupProber(ctx context.Context) {
 
 // probeReferencedDynamicGroups 探测所有被配置引用的动态组。
 func (a *App) probeReferencedDynamicGroups(ctx context.Context) {
+	a.DynamicProbeMutex.Lock()
+	defer a.DynamicProbeMutex.Unlock()
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		a.Logger.Warn("动态组读取配置失败 err=%v", err)
@@ -2916,6 +2964,195 @@ func (a *App) probeReferencedDynamicGroups(ctx context.Context) {
 			a.Logger.Warn("动态组探测失败 group=%s err=%v", group.Key, err)
 		}
 	}
+}
+
+// RunClashLogProbeTrigger 订阅 Clash 日志，按当前 group 担当异常触发探测。
+//
+// 适用场景：当前出口是动态 group 且担当节点出现超时错误时。
+// 示例：error payload 含当前担当 tag -> 触发一次动态组探测。
+func (a *App) RunClashLogProbeTrigger(ctx context.Context) {
+	for {
+		if !sleepContext(ctx, 0) {
+			return
+		}
+		if err := a.watchClashLogsOnce(ctx); err != nil && a.Logger != nil {
+			a.Logger.Warn("Clash 日志观察中断 err=%v", err)
+		}
+		if !sleepContext(ctx, 3*time.Second) {
+			return
+		}
+	}
+}
+
+// watchClashLogsOnce 连接 /logs 流，直到连接中断或上下文退出。
+//
+// 适用场景：daemon 内长期接收 sing-box 实时日志。
+// 示例：一行 JSON 日志 -> 更新连接归因或尝试触发探测。
+func (a *App) watchClashLogsOnce(ctx context.Context) error {
+	endpoint := "http://" + defaultClashAPIListen + "/logs?level=info"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("Clash 日志接口异常: %s %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	if a.Logger != nil {
+		a.Logger.Info("Clash 日志触发探测已连接")
+	}
+	tracker := newClashLogTracker()
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		if !sleepContext(ctx, 0) {
+			return ctx.Err()
+		}
+		a.handleClashLogLine(ctx, tracker, scanner.Bytes())
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// handleClashLogLine 处理一行 Clash 日志 JSON。
+//
+// 适用场景：实时日志流按行输出时复用连接归因。
+// 示例：info 记录 connID->tag，error 命中当前担当后触发探测。
+func (a *App) handleClashLogLine(ctx context.Context, tracker *ClashLogTracker, line []byte) {
+	var entry clashLogEntry
+	if err := json.Unmarshal(line, &entry); err != nil {
+		return
+	}
+	payload := strings.TrimSpace(entry.Payload)
+	if payload == "" {
+		return
+	}
+	switch strings.ToLower(entry.Type) {
+	case "info":
+		tracker.Remember(payload)
+	case "error":
+		tag := outboundTagFromLogPayload(payload)
+		if tag == "" {
+			tag = tracker.TagFor(payload)
+		}
+		if a.shouldTriggerProbeForLogError(tag, payload) {
+			a.triggerDynamicProbeFromLog(ctx, tag)
+		}
+	}
+}
+
+// shouldTriggerProbeForLogError 判断日志错误是否对应当前 group 担当节点。
+//
+// 适用场景：过滤 direct、本地异常和非当前担当节点错误。
+// 示例：当前 group 担当 tag == failedTag -> true。
+func (a *App) shouldTriggerProbeForLogError(failedTag string, payload string) bool {
+	failedTag = SanitizeTag(failedTag)
+	if failedTag == "" || !isProxyFailureTag(failedTag) || !isProbeTriggerError(payload) {
+		return false
+	}
+	group, activeTag, ok := a.currentDefaultGroupActiveTag()
+	if !ok || failedTag != activeTag {
+		return false
+	}
+	if a.Logger != nil {
+		a.Logger.Warn("当前 group 担当异常，准备触发探测 group=%s tag=%s err=%s", group.Key, failedTag, payload)
+	}
+	return true
+}
+
+// currentDefaultGroupActiveTag 返回当前默认 group 的实时担当节点。
+//
+// 适用场景：日志异常只在当前默认出口是 group 时触发。
+// 示例：policy.default=group-main -> 返回 group-main selector now。
+func (a *App) currentDefaultGroupActiveTag() (DynamicGroupConfig, string, bool) {
+	cfg, err := a.LoadConfig()
+	if err != nil || !ServiceEnabled(cfg) {
+		return DynamicGroupConfig{}, "", false
+	}
+	group, ok := defaultDynamicGroup(cfg)
+	if !ok {
+		return DynamicGroupConfig{}, "", false
+	}
+	groupTag := RuntimeBackendTag("group", group.Key)
+	activeTag, err := a.ClashSelectorNow(groupTag)
+	if err != nil || activeTag == "" {
+		if a.GroupRuntime != nil {
+			activeTag = a.GroupRuntime.BestTag(group.Key)
+		}
+	}
+	activeTag = SanitizeTag(activeTag)
+	if activeTag == "" {
+		return DynamicGroupConfig{}, "", false
+	}
+	return group, activeTag, true
+}
+
+// triggerDynamicProbeFromLog 按退避触发一次动态组探测。
+//
+// 适用场景：日志已确认当前担当节点出现超时类异常。
+// 示例：第一次立刻触发，后续按 3s/10s/30s/60s 抑制。
+func (a *App) triggerDynamicProbeFromLog(ctx context.Context, failedTag string) {
+	if !a.allowLogProbeTrigger(time.Now()) {
+		return
+	}
+	go func() {
+		defer a.finishLogProbeTrigger()
+		a.probeReferencedDynamicGroups(ctx)
+		if a.Logger != nil {
+			a.Logger.Info("日志异常触发动态组探测完成 tag=%s", failedTag)
+		}
+	}()
+}
+
+// allowLogProbeTrigger 判断本次日志异常是否可以启动探测。
+//
+// 适用场景：防止大量连接同时失败时重复探测。
+// 示例：首次 true，3 秒内第二次 false。
+func (a *App) allowLogProbeTrigger(now time.Time) bool {
+	state := &a.LogProbeTrigger
+	state.Mutex.Lock()
+	defer state.Mutex.Unlock()
+	if len(logTriggerBackoffDelays) == 0 {
+		return false
+	}
+	if !state.LastErrorAt.IsZero() && now.Sub(state.LastErrorAt) > time.Minute {
+		state.BackoffIndex = 0
+	}
+	state.LastErrorAt = now
+	if state.Running {
+		return false
+	}
+	if !state.LastTriggeredAt.IsZero() {
+		backoff := logTriggerBackoffDelays[minInt(state.BackoffIndex, len(logTriggerBackoffDelays)-1)]
+		if now.Sub(state.LastTriggeredAt) < backoff {
+			return false
+		}
+	}
+	state.LastTriggeredAt = now
+	if state.BackoffIndex < len(logTriggerBackoffDelays)-1 {
+		state.BackoffIndex++
+	}
+	state.Running = true
+	return true
+}
+
+// finishLogProbeTrigger 标记日志触发探测结束。
+//
+// 适用场景：异步探测完成后允许下一次退避窗口触发。
+// 示例：Running=true -> false。
+func (a *App) finishLogProbeTrigger() {
+	state := &a.LogProbeTrigger
+	state.Mutex.Lock()
+	defer state.Mutex.Unlock()
+	state.Running = false
 }
 
 // ProbeDynamicGroup 执行动态组三轮探测并切换 selector。
@@ -6027,6 +6264,17 @@ func parseDurationOrDefault(value string, fallback time.Duration) time.Duration 
 	return duration
 }
 
+// minInt 返回两个整数中较小者。
+//
+// 适用场景：限制退避下标不超过数组边界。
+// 示例：minInt(3, 1) -> 1。
+func minInt(a int, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // clientIP 从请求中提取客户端 IP。
 func clientIP(req *http.Request) string {
 	host, _, err := net.SplitHostPort(req.RemoteAddr)
@@ -6541,6 +6789,128 @@ func referencedDynamicGroups(cfg Config) []DynamicGroupConfig {
 		addRef(rule.Outbound)
 	}
 	return result
+}
+
+// defaultDynamicGroup 返回 policy.default 指向的动态 group。
+//
+// 适用场景：日志触发只对当前 main 是 group 的情况生效。
+// 示例：policy.default=group-main -> main group 配置。
+func defaultDynamicGroup(cfg Config) (DynamicGroupConfig, bool) {
+	ref := SanitizeTag(cfg.Policy.Default)
+	if ref == "" {
+		return DynamicGroupConfig{}, false
+	}
+	for _, group := range cfg.Backend.Groups {
+		normalized := group
+		normalized.Key = SanitizeTag(group.Key)
+		if normalized.Key == "" || len(normalized.Members) == 0 {
+			continue
+		}
+		groupTag := RuntimeBackendTag("group", normalized.Key)
+		if ref == groupTag || ref == normalized.Key || ref == SanitizeTag(group.Name) {
+			return normalized, true
+		}
+	}
+	return DynamicGroupConfig{}, false
+}
+
+// newClashLogTracker 创建 Clash 日志连接归因缓存。
+//
+// 适用场景：/logs error 行缺少 outbound tag 时反查前置 info。
+// 示例：connID=1 info 记录 tag，error 通过 connID 找回 tag。
+func newClashLogTracker() *ClashLogTracker {
+	return &ClashLogTracker{Tags: map[string]trackedOutboundTag{}}
+}
+
+// Remember 从 info 日志记录连接 ID 到 outbound tag 的映射。
+//
+// 适用场景：后续 connection upload handshake 错误只有 connID。
+// 示例："[1 0ms] outbound/hysteria2[x]" -> 1 maps x。
+func (t *ClashLogTracker) Remember(payload string) {
+	if t == nil {
+		return
+	}
+	connID := logConnID(payload)
+	tag := outboundTagFromLogPayload(payload)
+	if connID == "" || tag == "" {
+		return
+	}
+	now := time.Now()
+	t.cleanup(now)
+	t.Tags[connID] = trackedOutboundTag{Tag: tag, SeenAt: now}
+}
+
+// TagFor 根据 error 日志里的连接 ID 反查 outbound tag。
+//
+// 适用场景：错误正文没有 outbound/type[tag] 字段。
+// 示例："[1 3s] connection upload handshake..." -> x。
+func (t *ClashLogTracker) TagFor(payload string) string {
+	if t == nil {
+		return ""
+	}
+	t.cleanup(time.Now())
+	item := t.Tags[logConnID(payload)]
+	return item.Tag
+}
+
+// cleanup 清理过期连接归因，避免长期 daemon 内存增长。
+//
+// 适用场景：连接 ID 只需覆盖短期握手错误归因。
+// 示例：超过 2 分钟的 connID 被删除。
+func (t *ClashLogTracker) cleanup(now time.Time) {
+	for connID, item := range t.Tags {
+		if now.Sub(item.SeenAt) > 2*time.Minute {
+			delete(t.Tags, connID)
+		}
+	}
+}
+
+// logConnID 从 sing-box 简化日志中提取连接 ID。
+//
+// 适用场景：匹配 "[123 1ms]" 开头的 payload。
+// 示例："[123 1ms] connection" -> "123"。
+func logConnID(payload string) string {
+	match := logConnIDRegexp.FindStringSubmatch(payload)
+	if len(match) != 2 {
+		return ""
+	}
+	return match[1]
+}
+
+// outboundTagFromLogPayload 从日志正文直接提取 outbound tag。
+//
+// 适用场景：拨号失败日志包含 "using outbound/type[tag]"。
+// 示例："outbound/hysteria2[x]" -> "x"。
+func outboundTagFromLogPayload(payload string) string {
+	match := logOutboundRegexp.FindStringSubmatch(payload)
+	if len(match) != 2 {
+		return ""
+	}
+	return SanitizeTag(match[1])
+}
+
+// isProxyFailureTag 判断 tag 是否可能是可切换代理节点。
+//
+// 适用场景：过滤 direct、block、dns 等非代理出站。
+// 示例："direct" -> false，"sub-a" -> true。
+func isProxyFailureTag(tag string) bool {
+	switch SanitizeTag(tag) {
+	case "", "direct", "block", "dns":
+		return false
+	default:
+		return true
+	}
+}
+
+// isProbeTriggerError 判断错误是否值得触发动态组探测。
+//
+// 适用场景：只对网络超时类异常做快速健康检测。
+// 示例："i/o timeout" -> true，"connection refused" -> false。
+func isProbeTriggerError(payload string) bool {
+	value := strings.ToLower(payload)
+	return strings.Contains(value, "timeout: no recent network activity") ||
+		strings.Contains(value, "context deadline exceeded") ||
+		strings.Contains(value, "i/o timeout")
 }
 
 // findSubscription 按名称查找订阅配置。
