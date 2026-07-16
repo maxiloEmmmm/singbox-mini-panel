@@ -1522,6 +1522,8 @@ type App struct {
 	SingBoxBackoff time.Duration
 	// LogProbeTrigger 保存日志异常触发动态组探测的退避状态。
 	LogProbeTrigger LogProbeTriggerState
+	// DNSHealth 监控 hijack-dns 的 direct 和 remote 分支。
+	DNSHealth *DNSHealthMonitor
 }
 
 // LogProbeTriggerState 表示日志触发探测状态，适用于抑制异常风暴。
@@ -2865,6 +2867,8 @@ func (a *App) Daemon() error {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	a.DNSHealth = NewDNSHealthMonitor(DefaultDNSHealthConfig(), a.Logger, a.Restart)
+	go a.DNSHealth.Run(ctx)
 	go a.RunDynamicGroupProber(ctx)
 	go a.RunClashLogProbeTrigger(ctx)
 	var webServer *WebServer
@@ -3039,6 +3043,9 @@ func (a *App) handleClashLogLine(ctx context.Context, tracker *ClashLogTracker, 
 	case "info":
 		tracker.Remember(payload)
 	case "error":
+		if isDNSExchangeFailure(payload) {
+			a.TriggerDNSHealthCheck("dns exchange failed")
+		}
 		tag := outboundTagFromLogPayload(payload)
 		if tag == "" {
 			tag = tracker.TagFor(payload)
@@ -3409,6 +3416,7 @@ func normalizeDynamicGroupPrimary(mode string, primary string, members []string)
 
 // SwitchSelectorOutbound 通过 Clash API 切换 selector 当前出口。
 func (a *App) SwitchSelectorOutbound(selectorTag string, outboundTag string) error {
+	previousTag, previousErr := a.ClashSelectorNow(selectorTag)
 	endpoint := "http://" + defaultClashAPIListen + "/proxies/" + url.PathEscape(selectorTag)
 	body, err := json.Marshal(map[string]string{"name": outboundTag})
 	if err != nil {
@@ -3429,7 +3437,21 @@ func (a *App) SwitchSelectorOutbound(selectorTag string, outboundTag string) err
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return fmt.Errorf("selector 切换失败: %s %s", resp.Status, strings.TrimSpace(string(data)))
 	}
+	if previousErr == nil && SanitizeTag(previousTag) != SanitizeTag(outboundTag) {
+		a.TriggerDNSHealthCheck("selector changed")
+	}
 	return nil
+}
+
+// TriggerDNSHealthCheck 请求 DNS 模块立即检查 remote-dns 链路。
+//
+// 适用场景：selector 已切换或日志出现 DNS exchange failed。
+// 示例：TriggerDNSHealthCheck("selector changed") -> 合并排队一次检查。
+func (a *App) TriggerDNSHealthCheck(reason string) {
+	if a.DNSHealth == nil {
+		return
+	}
+	a.DNSHealth.Trigger(reason)
 }
 
 // CloseClashConnections 关闭 sing-box 当前连接，适用于 selector 热切后立即生效。
