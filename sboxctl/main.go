@@ -7044,6 +7044,12 @@ func (a *App) BuildSingBoxConfig(cfg Config, backends []ProxyBackend, directRule
 		{"rule_set": []string{"geosite-cn", "geosite-private"}, "server": "direct-dns"},
 		{"query_type": []int{64, 65}, "action": "predefined", "rcode": "NOERROR"},
 	}
+	if directDNSRule := BuildDirectDNSRule(directRules); directDNSRule != nil {
+		// 触发条件：域名同时存在于强制直连和代理规则中。
+		// 不能放在代理 FakeIP 规则之后，否则 DNS 仍会依赖代理出口。
+		// 防止最终连接直连但域名解析被故障代理链路阻断。
+		dnsRules = append([]map[string]any{directDNSRule}, dnsRules...)
+	}
 	if HostsOverrideEnabled(cfg) {
 		dnsRules = append([]map[string]any{{"ip_accept_any": true, "server": defaultHostsDNSTag}}, dnsRules...)
 	}
@@ -7503,6 +7509,34 @@ func BuildRouteRule(rule LocalRule, outbound string) map[string]any {
 		m["ip_cidr"] = []string{NormalizeCIDR(rule.Value)}
 	}
 	return m
+}
+
+// BuildDirectDNSRule 将强制直连域名转换为 direct-dns 规则。
+// 示例：domain:example.com -> example.com 及其子域名走 direct-dns。
+func BuildDirectDNSRule(rules []LocalRule) map[string]any {
+	domains := make([]string, 0)
+	domainSuffixes := make([]string, 0)
+	seen := make(map[string]bool)
+	for _, rule := range rules {
+		if rule.Kind != "domain" {
+			continue
+		}
+		domain := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(rule.Value), "."))
+		if domain == "" || seen[domain] {
+			continue
+		}
+		seen[domain] = true
+		domains = append(domains, domain)
+		domainSuffixes = append(domainSuffixes, "."+domain)
+	}
+	if len(domains) == 0 {
+		return nil
+	}
+	return map[string]any{
+		"domain":        domains,
+		"domain_suffix": domainSuffixes,
+		"server":        "direct-dns",
+	}
 }
 
 // BuildTailscaleDirectRouteRules 构造 Tailscale 直连规则。
