@@ -11,6 +11,7 @@
     "e2e:obscura:capability": "node tests/e2e/obscura-vite-capability.mjs",
     "e2e:obscura:score": "node tests/e2e/obscura-score-display.mjs",
     "e2e:chrome:score": "node tests/e2e/chrome-score-display.mjs",
+    "e2e:chrome:traffic": "node tests/e2e/traffic-stats-display.mjs",
     "e2e:web": "node tests/e2e/run-web-verify.mjs",
     "e2e:web:ready": "node tests/e2e/check-web-ready.mjs"
   },
