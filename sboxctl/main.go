@@ -1524,6 +1524,8 @@ type App struct {
 	LogProbeTrigger LogProbeTriggerState
 	// DNSHealth 监控 hijack-dns 的 direct 和 remote 分支。
 	DNSHealth *DNSHealthMonitor
+	// TrafficStats 保存当前进程采集的每日代理流量。
+	TrafficStats *TrafficStats
 }
 
 // LogProbeTriggerState 表示日志触发探测状态，适用于抑制异常风暴。
@@ -2145,6 +2147,7 @@ func NewAppFromFlags() *App {
 		SingBoxConfig:   *singBoxConfig,
 		HTTPClient:      NewHTTPClient(defaultTimeout, "", defaultUpdateDNS),
 		GroupRuntime:    NewGroupRuntime(),
+		TrafficStats:    NewTrafficStats(),
 	}
 }
 
@@ -2850,6 +2853,9 @@ func (a *App) Web() error {
 	if err != nil {
 		return err
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go a.TrafficStats.Run(ctx, a.FetchWebConnections)
 	a.Logger.Info("web 面板启动 addr=%s", server.Server.Addr)
 	return server.Server.ListenAndServe()
 }
@@ -2871,6 +2877,7 @@ func (a *App) Daemon() error {
 	go a.DNSHealth.Run(ctx)
 	go a.RunDynamicGroupProber(ctx)
 	go a.RunClashLogProbeTrigger(ctx)
+	go a.TrafficStats.Run(ctx, a.FetchWebConnections)
 	var webServer *WebServer
 	if cfg.Web.Enabled {
 		webServer, err = a.StartWebServer(cfg)
@@ -3939,6 +3946,7 @@ func (a *App) StartWebServer(cfg Config) (*WebServer, error) {
 	mux.HandleFunc("/api/node/probe", web.withAuth(web.handleNodeProbe))
 	mux.HandleFunc("/api/route/check", web.withAuth(web.handleRouteCheck))
 	mux.HandleFunc("/api/connections", web.withAuth(web.handleConnections))
+	mux.HandleFunc("/api/traffic/daily", web.withAuth(web.handleTrafficDaily))
 	mux.HandleFunc("/", web.handleStatic)
 	return web, nil
 }
@@ -4235,6 +4243,20 @@ func (w *WebServer) handleConnections(rw http.ResponseWriter, req *http.Request)
 		return
 	}
 	writeJSON(rw, http.StatusOK, connections)
+}
+
+// handleTrafficDaily 返回服务内存中的每日代理流量，适用于 Web 排行展示。
+// 示例：GET /api/traffic/daily -> day -> target -> up/down。
+func (w *WebServer) handleTrafficDaily(rw http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		writeJSON(rw, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if w.App.TrafficStats == nil {
+		writeJSON(rw, http.StatusOK, TrafficDailyResponse{Days: map[string]map[string]TrafficCounter{}})
+		return
+	}
+	writeJSON(rw, http.StatusOK, w.App.TrafficStats.Snapshot())
 }
 
 // handleStatic 返回内嵌前端资源，未知路径回退到 index.html。

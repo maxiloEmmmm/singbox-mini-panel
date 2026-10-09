@@ -222,6 +222,30 @@ export interface ConnectionRow {
   started_at: string
 }
 
+/** 单个目标的单日代理流量。 */
+export interface TrafficCounter {
+  /** 累计上传字节数。 */
+  up_count: number
+  /** 累计下载字节数。 */
+  down_count: number
+}
+
+/** 每日代理流量响应适用于只读展示服务端内存状态。 */
+export interface TrafficDailyResponse {
+  /** 服务端最后一次成功采样时间。 */
+  updated_at: string
+  /** 自然日到目标流量映射。 */
+  days: Record<string, Record<string, TrafficCounter>>
+}
+
+/** 目标流量行适用于页面排序和过滤。 */
+export interface TrafficTargetRow extends TrafficCounter {
+  /** 目标域名，域名不可用时为目标 IP。 */
+  target: string
+  /** 上传和下载合计字节数。 */
+  total: number
+}
+
 /** 入口配置适用于 Web 修改 mixed 监听。 */
 export interface InboundSettings {
   /** 入口模式。 */

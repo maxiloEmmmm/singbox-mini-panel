@@ -49,6 +49,8 @@ import type {
   StaticForm,
   SubscriptionForm,
   SubscriptionGroup,
+  TrafficDailyResponse,
+  TrafficTargetRow,
 } from './types'
 
 const token = ref(localStorage.getItem('sboxctl_token') || '')
@@ -150,6 +152,12 @@ const connectionDecisionFilter = ref('all')
 const connectionSort = ref('total')
 const connectionsLoading = ref(false)
 const connectionsError = ref('')
+const trafficDays = ref<TrafficDailyResponse['days']>({})
+const trafficUpdatedAt = ref('')
+const selectedTrafficDay = ref('')
+const trafficFilter = ref('')
+const trafficLoading = ref(false)
+const trafficError = ref('')
 
 const isLoggedIn = computed(() => token.value.length > 0)
 const setupRequired = computed(() => health.value?.setup_required === true)
@@ -194,6 +202,33 @@ const filteredConnections = computed(() => {
       item.rule_payload,
     ].join(' ').toLowerCase().includes(query)
   }).sort(compareConnections)
+})
+// 适用场景：生成日期选择项；示例：两个日期 -> 新日期在前。
+const trafficDayOptions = computed(() => Object.keys(trafficDays.value).sort().reverse())
+// 适用场景：生成当前日期的目标排行；示例：下载较多的目标 -> 排在前面。
+const selectedTrafficRows = computed<TrafficTargetRow[]>(() => {
+  const query = trafficFilter.value.trim().toLowerCase()
+  const counters = trafficDays.value[selectedTrafficDay.value] || {}
+  return Object.entries(counters)
+    .map(([target, counter]) => ({
+      target,
+      up_count: counter.up_count || 0,
+      down_count: counter.down_count || 0,
+      total: (counter.up_count || 0) + (counter.down_count || 0),
+    }))
+    .filter((item) => !query || item.target.toLowerCase().includes(query))
+    .sort((left, right) => right.total - left.total || left.target.localeCompare(right.target, 'en'))
+})
+// 适用场景：计算当前日期汇总；示例：两个目标 -> 合并各自上下行。
+const selectedTrafficSummary = computed(() => {
+  const counters = trafficDays.value[selectedTrafficDay.value] || {}
+  return Object.values(counters).reduce(
+    (summary, counter) => ({
+      upload: summary.upload + (counter.up_count || 0),
+      download: summary.download + (counter.down_count || 0),
+    }),
+    { upload: 0, download: 0 },
+  )
 })
 const memberSourceGroups = computed<MemberSourceGroup[]>(() => {
   const groups: MemberSourceGroup[] = [
@@ -1370,6 +1405,40 @@ async function fetchConnections() {
   }
 }
 
+// 适用场景：刷新服务端内存中的每日代理流量快照。
+// 示例：GET /api/traffic/daily -> 替换当前只读展示数据。
+async function fetchTrafficDaily() {
+  if (!token.value || trafficLoading.value) {
+    return
+  }
+  trafficLoading.value = true
+  try {
+    const response = await fetch('/api/traffic/daily', {
+      cache: 'no-store',
+      headers: authHeaders(token.value),
+    })
+    if (response.status === 401 || response.status === 403) {
+      logout()
+      return
+    }
+    if (!response.ok) {
+      throw new Error(await readError(response))
+    }
+    const data = (await response.json()) as TrafficDailyResponse
+    trafficDays.value = data.days || {}
+    trafficUpdatedAt.value = data.updated_at || ''
+    const availableDays = Object.keys(trafficDays.value).sort().reverse()
+    if (!selectedTrafficDay.value || !trafficDays.value[selectedTrafficDay.value]) {
+      selectedTrafficDay.value = availableDays[0] || ''
+    }
+    trafficError.value = ''
+  } catch (error) {
+    trafficError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    trafficLoading.value = false
+  }
+}
+
 // 适用场景：把连接方向转成中文标签。
 function connectionDecisionText(decision: string) {
   if (decision === 'direct') {
@@ -1941,6 +2010,7 @@ async function boot() {
     if (token.value && health.value && !health.value.setup_required) {
       await fetchState()
       await fetchConnections()
+      await fetchTrafficDaily()
     }
   } catch (error) {
     pageError.value = error instanceof Error ? error.message : String(error)
@@ -1959,6 +2029,7 @@ const uptimeTimer = window.setInterval(() => {
 
 const connectionsTimer = window.setInterval(() => {
   void fetchConnections()
+  void fetchTrafficDaily()
 }, 2000)
 
 onUnmounted(() => {
@@ -3190,6 +3261,51 @@ onUnmounted(() => {
                   </div>
                 </div>
                 <div v-if="filteredConnections.length === 0" class="empty-line">无连接</div>
+              </div>
+            </div>
+          </a-tab-pane>
+
+          <a-tab-pane key="traffic" tab="流量">
+            <div class="rule-pane traffic-pane" data-testid="traffic-daily-pane">
+              <div class="pane-title">
+                <strong>每日代理流量</strong>
+                <span>{{ selectedTrafficRows.length }} 个目标</span>
+              </div>
+              <div class="traffic-toolbar">
+                <a-select
+                  v-model:value="selectedTrafficDay"
+                  class="traffic-day-select"
+                  placeholder="暂无日期"
+                >
+                  <a-select-option v-for="day in trafficDayOptions" :key="day" :value="day">
+                    {{ day }}
+                  </a-select-option>
+                </a-select>
+                <a-input v-model:value="trafficFilter" placeholder="过滤域名或 IP" />
+              </div>
+              <div class="connection-summary">
+                <span>上传 {{ formatBytes(selectedTrafficSummary.upload) }}</span>
+                <span>下载 {{ formatBytes(selectedTrafficSummary.download) }}</span>
+                <span>合计 {{ formatBytes(selectedTrafficSummary.upload + selectedTrafficSummary.download) }}</span>
+                <span>{{ trafficUpdatedAt ? formatTime(trafficUpdatedAt) : '等待采样' }}</span>
+                <a-tag :color="trafficLoading ? 'gold' : 'blue'">
+                  {{ trafficLoading ? '刷新中' : '仅代理' }}
+                </a-tag>
+              </div>
+              <a-alert v-if="trafficError" :message="trafficError" type="error" show-icon />
+              <div class="traffic-list">
+                <div
+                  v-for="item in selectedTrafficRows"
+                  :key="item.target"
+                  class="traffic-row"
+                  data-testid="traffic-target-row"
+                >
+                  <strong>{{ item.target }}</strong>
+                  <span>{{ formatBytes(item.total) }}</span>
+                  <small>↓ {{ formatBytes(item.down_count) }}</small>
+                  <small>↑ {{ formatBytes(item.up_count) }}</small>
+                </div>
+                <div v-if="selectedTrafficRows.length === 0" class="empty-line">暂无代理流量</div>
               </div>
             </div>
           </a-tab-pane>
