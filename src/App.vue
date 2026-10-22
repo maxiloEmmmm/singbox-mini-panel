@@ -162,6 +162,10 @@ const trafficError = ref('')
 const isLoggedIn = computed(() => token.value.length > 0)
 const setupRequired = computed(() => health.value?.setup_required === true)
 const isServiceRunning = computed(() => health.value?.sing_box_status === 'running')
+// 适用场景：展示当前草稿是否启用 TUN；示例：both -> true。
+const tunInboundEnabled = computed(() => inboundMode.value === 'tun' || inboundMode.value === 'both')
+// 适用场景：展示当前草稿是否启用 Mixed；示例：both -> true。
+const mixedInboundEnabled = computed(() => inboundMode.value === 'mixed' || inboundMode.value === 'both')
 const showAbnormal = computed(() => !loading.value && !health.value)
 const lastUpdateText = computed(() => formatTime(health.value?.last_update_success || ''))
 const uptimeText = computed(() => formatDurationSince(health.value?.started_at || '', nowTick.value))
@@ -2097,7 +2101,8 @@ onUnmounted(() => {
         <strong>sboxctl</strong>
         <span>当前出口 {{ activeOutboundText }}</span>
         <div class="feature-row">
-          <a-tag color="blue">TUN</a-tag>
+          <a-tag v-if="tunInboundEnabled" color="blue">TUN</a-tag>
+          <a-tag v-if="mixedInboundEnabled" color="purple">Mixed</a-tag>
           <a-tag color="purple">FakeIP</a-tag>
           <a-tag color="cyan">Geo Rules</a-tag>
           <a-tag color="geekblue">HY2</a-tag>
@@ -2946,7 +2951,7 @@ onUnmounted(() => {
             <div class="rule-pane">
               <div class="pane-title">
                 <strong>入口配置</strong>
-                <span>mixed 监听</span>
+                <span>TUN 与 Mixed 可同时启用</span>
               </div>
               <div class="form-grid">
                 <label class="field-row">
@@ -2956,6 +2961,7 @@ onUnmounted(() => {
                     :options="[
                       { label: 'TUN', value: 'tun' },
                       { label: 'Mixed', value: 'mixed' },
+                      { label: '同时', value: 'both' },
                     ]"
                   />
                 </label>

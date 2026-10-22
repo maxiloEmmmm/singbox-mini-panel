@@ -4,6 +4,7 @@ import Alert from 'ant-design-vue/es/alert'
 import Button from 'ant-design-vue/es/button'
 import Form from 'ant-design-vue/es/form'
 import Input from 'ant-design-vue/es/input'
+import InputNumber from 'ant-design-vue/es/input-number'
 import Modal from 'ant-design-vue/es/modal'
 import Segmented from 'ant-design-vue/es/segmented'
 import Select from 'ant-design-vue/es/select'
@@ -19,6 +20,7 @@ const antComponents = [
   Button,
   Form,
   Input,
+  InputNumber,
   Modal,
   Segmented,
   Select,

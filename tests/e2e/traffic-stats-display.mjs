@@ -26,7 +26,7 @@ const panelState = {
   geofiles: [],
   hosts_override: true,
   inbound: {
-    inbound_mode: 'tun',
+    inbound_mode: 'both',
     tun_route_exclude_address: [],
     tun_route_exclude_address_set: [],
     mixed_listen: '0.0.0.0',
@@ -134,6 +134,27 @@ async function assertMobileLayout(page) {
   }
 }
 
+// 适用场景：验证同时入口模式从服务端状态恢复到页面。
+// 示例：inbound_mode=both -> 同时显示 TUN、Mixed 且选中“同时”。
+async function assertBothInbound(page) {
+  const featureText = await page.locator('.feature-row').innerText()
+  if (!featureText.includes('TUN') || !featureText.includes('Mixed')) {
+    throw new Error(`入口能力标签错误：${featureText}`)
+  }
+  await page.getByRole('tab', { name: '入口', exact: true }).click()
+  const selectedMode = page.locator('.ant-segmented-item-selected').filter({ hasText: '同时' })
+  await selectedMode.waitFor({ state: 'visible' })
+  const mixedPort = page.locator('.ant-input-number input').first()
+  await mixedPort.waitFor({ state: 'visible' })
+  if (await mixedPort.inputValue() !== '1080') {
+    throw new Error(`Mixed 端口展示错误：${await mixedPort.inputValue()}`)
+  }
+  const paneText = await page.getByRole('tabpanel').filter({ hasText: '入口配置' }).innerText()
+  if (!paneText.includes('TUN 与 Mixed 可同时启用')) {
+    throw new Error(`同时入口说明缺失：${paneText}`)
+  }
+}
+
 // 适用场景：在真实浏览器中完成每日代理流量渲染闭环。
 // 示例：main() -> 桌面和手机视口验证通过。
 async function main() {
@@ -146,6 +167,9 @@ async function main() {
     await openTrafficPane(page)
     await assertTrafficRows(page)
     await page.screenshot({ path: '/tmp/sboxctl-traffic-stats-desktop.png', fullPage: true })
+    await assertBothInbound(page)
+    await page.screenshot({ path: '/tmp/sboxctl-inbound-both-desktop.png', fullPage: true })
+    await page.getByRole('tab', { name: '流量', exact: true }).click()
     await assertMobileLayout(page)
     await page.screenshot({ path: '/tmp/sboxctl-traffic-stats-mobile.png', fullPage: true })
     console.log('traffic stats display passed')
