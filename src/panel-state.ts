@@ -304,9 +304,9 @@ export function normalizeInboundSettings(value: InboundSettings | null | undefin
   }
 }
 
-/** normalizedInboundMode 归一化入口模式，兼容旧配置空值。 */
+/** normalizedInboundMode 归一化入口模式；示例：both -> both，未知值 -> tun。 */
 export function normalizedInboundMode(value: string) {
-  return value === 'mixed' ? 'mixed' : 'tun'
+  return value === 'mixed' || value === 'both' ? value : 'tun'
 }
 
 /** sanitizeLocalKey 按前端规则清洗 key。 */

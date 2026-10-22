@@ -266,9 +266,9 @@ type ServiceConfig struct {
 	Enabled *bool `yaml:"enabled"`
 }
 
-// InboundConfig 表示入口配置，适用于 TUN 和手动代理两种模式。
+// InboundConfig 表示入口配置，适用于 TUN、手动代理或两者同时启用。
 type InboundConfig struct {
-	// Mode 是入口模式，支持 tun 和 mixed。
+	// Mode 是入口模式，支持 tun、mixed 和 both。
 	Mode string `yaml:"mode"`
 	// Tun 是 TUN 入站配置。
 	Tun TunInboundConfig `yaml:"tun"`
@@ -4590,7 +4590,7 @@ func normalizeInboundMode(value string, fallback string) (string, error) {
 		mode = "tun"
 	}
 	switch mode {
-	case "tun", "mixed":
+	case "tun", "mixed", "both":
 		return mode, nil
 	default:
 		return "", fmt.Errorf("入口模式不支持: %s", mode)
@@ -7242,9 +7242,30 @@ func BuildProxyFakeIPDNSRule(proxyRuleSets []string) map[string]any {
 }
 
 // BuildInbounds 根据入口模式生成 sing-box inbounds。
+// 示例：mode=both -> [tun-in, mixed-in]。
 func BuildInbounds(cfg InboundConfig) []map[string]any {
-	if cfg.Mode == "mixed" {
-		inbound := map[string]any{
+	inbounds := make([]map[string]any, 0, 2)
+	if cfg.Mode != "mixed" {
+		tunInbound := map[string]any{
+			"type":           "tun",
+			"tag":            "tun-in",
+			"interface_name": "sbox0",
+			"address":        []string{"172.19.0.1/30"},
+			"auto_route":     true,
+			"auto_redirect":  true,
+			"strict_route":   true,
+			"stack":          "mixed",
+		}
+		if len(cfg.Tun.RouteExcludeAddress) > 0 {
+			tunInbound["route_exclude_address"] = append([]string(nil), cfg.Tun.RouteExcludeAddress...)
+		}
+		if len(cfg.Tun.RouteExcludeAddressSet) > 0 {
+			tunInbound["route_exclude_address_set"] = append([]string(nil), cfg.Tun.RouteExcludeAddressSet...)
+		}
+		inbounds = append(inbounds, tunInbound)
+	}
+	if cfg.Mode == "mixed" || cfg.Mode == "both" {
+		mixedInbound := map[string]any{
 			"type":        "mixed",
 			"tag":         "mixed-in",
 			"listen":      cfg.Mixed.Listen,
@@ -7258,29 +7279,11 @@ func BuildInbounds(cfg InboundConfig) []map[string]any {
 					"password": user.Password,
 				})
 			}
-			inbound["users"] = users
+			mixedInbound["users"] = users
 		}
-		return []map[string]any{inbound}
+		inbounds = append(inbounds, mixedInbound)
 	}
-	inbound := map[string]any{
-		"type":           "tun",
-		"tag":            "tun-in",
-		"interface_name": "sbox0",
-		"address":        []string{"172.19.0.1/30"},
-		"auto_route":     true,
-		"auto_redirect":  true,
-		"strict_route":   true,
-		"stack":          "mixed",
-	}
-	if len(cfg.Tun.RouteExcludeAddress) > 0 {
-		inbound["route_exclude_address"] = append([]string(nil), cfg.Tun.RouteExcludeAddress...)
-	}
-	if len(cfg.Tun.RouteExcludeAddressSet) > 0 {
-		inbound["route_exclude_address_set"] = append([]string(nil), cfg.Tun.RouteExcludeAddressSet...)
-	}
-	return []map[string]any{
-		inbound,
-	}
+	return inbounds
 }
 
 // BuildRuleSets 构造本地 srs 规则集引用。
@@ -8982,7 +8985,7 @@ func webSubscriptionProxy(cfg Config) (string, error) {
 		}
 		return configuredProxy, nil
 	}
-	if cfg.Inbound.Mode != "mixed" {
+	if cfg.Inbound.Mode != "mixed" && cfg.Inbound.Mode != "both" {
 		return "", nil
 	}
 	if cfg.Inbound.Mixed.Port <= 0 {

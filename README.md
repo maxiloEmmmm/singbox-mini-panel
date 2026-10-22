@@ -38,7 +38,7 @@ sboxctl daemon/start/restart
 
 ### 管理入口
 
-默认入口是 TUN，全局接管局域网客户端流量。也可以切到 mixed 模式，对外提供 socks/http 混合端口。
+默认入口是 TUN，全局接管局域网客户端流量。也可以切到 mixed 模式，或同时开启 TUN 与 mixed，对外提供 socks/http 混合端口。
 
 ICMP 会直连，ping 只用于判断连通性，不代表 TCP/HTTPS 代理路径。
 
