@@ -3785,6 +3785,7 @@ func (a *App) ResolveSubscriptionNodes(cfg *Config, sub Subscription, refresh bo
 
 // UpdateSubscriptionCaches 更新订阅缓存，适用于手动和 daemon 周期更新。
 func (a *App) UpdateSubscriptionCaches(cfg *Config, missingOnly bool) error {
+	var updateErrors []error
 	for _, sub := range cfg.Backend.Subscription {
 		if !sub.Enabled {
 			continue
@@ -3796,21 +3797,29 @@ func (a *App) UpdateSubscriptionCaches(cfg *Config, missingOnly bool) error {
 			}
 		}
 		if _, err := a.FetchAndCacheSubscription(cfg, sub); err != nil {
-			a.Logger.Error("订阅更新失败 name=%s err=%v", sub.Name, err)
+			updateErr := fmt.Errorf("订阅更新失败 name=%s err=%w", sub.Name, err)
+			a.Logger.Error("%v", updateErr)
+			updateErrors = append(updateErrors, updateErr)
 		}
 	}
-	return nil
+	return errors.Join(updateErrors...)
 }
 
 // FetchAndCacheSubscription 下载订阅并保存缓存，失败时不会覆盖旧缓存。
 func (a *App) FetchAndCacheSubscription(cfg *Config, sub Subscription) ([]ProxyBackend, error) {
-	a.configureHTTPClient(cfg.Update, cfg.Update.SubscriptionUseProxy)
-	return a.fetchAndCacheSubscription(sub, "配置")
+	if err := a.configureSubscriptionHTTPClient(*cfg, cfg.Update.SubscriptionUseProxy); err != nil {
+		return nil, err
+	}
+	mode := "直连"
+	if cfg.Update.SubscriptionUseProxy {
+		mode = "代理"
+	}
+	return a.fetchAndCacheSubscription(sub, mode)
 }
 
 // FetchAndCacheSubscriptionForWeb 按 Web 按钮语义下载订阅，不读取自动更新开关。
 func (a *App) FetchAndCacheSubscriptionForWeb(cfg *Config, sub Subscription, useProxy bool) ([]ProxyBackend, error) {
-	if err := a.configureWebSubscriptionHTTPClient(*cfg, useProxy); err != nil {
+	if err := a.configureSubscriptionHTTPClient(*cfg, useProxy); err != nil {
 		return nil, err
 	}
 	mode := "直连"
@@ -8962,11 +8971,12 @@ func (a *App) configureHTTPClient(cfg UpdateConfig, useProxy bool) {
 	a.HTTPClient = NewHTTPClient(defaultTimeout, proxy, cfg.DNS)
 }
 
-// configureWebSubscriptionHTTPClient 配置 Web 手动订阅更新的明确代理语义。
-func (a *App) configureWebSubscriptionHTTPClient(cfg Config, useProxy bool) error {
+// configureSubscriptionHTTPClient 统一配置自动和手动订阅更新的明确代理语义。
+// 示例：显式代理为空且 mixed 已启用 -> 使用本机 mixed 入口。
+func (a *App) configureSubscriptionHTTPClient(cfg Config, useProxy bool) error {
 	proxy := ""
 	if useProxy {
-		nextProxy, err := webSubscriptionProxy(cfg)
+		nextProxy, err := subscriptionProxy(cfg)
 		if err != nil {
 			return err
 		}
@@ -8976,8 +8986,9 @@ func (a *App) configureWebSubscriptionHTTPClient(cfg Config, useProxy bool) erro
 	return nil
 }
 
-// webSubscriptionProxy 返回 Web 手动订阅更新应使用的代理入口。
-func webSubscriptionProxy(cfg Config) (string, error) {
+// subscriptionProxy 返回订阅更新应使用的代理入口。
+// 示例：update.proxy 为空且 mixed 端口为 10808 -> http://127.0.0.1:10808。
+func subscriptionProxy(cfg Config) (string, error) {
 	configuredProxy := strings.TrimSpace(cfg.Update.Proxy)
 	if configuredProxy != "" {
 		if err := validateProxyURL(configuredProxy); err != nil {
@@ -8986,7 +8997,7 @@ func webSubscriptionProxy(cfg Config) (string, error) {
 		return configuredProxy, nil
 	}
 	if cfg.Inbound.Mode != "mixed" && cfg.Inbound.Mode != "both" {
-		return "", nil
+		return "", errors.New("已启用代理更新，但 update.proxy 为空且 mixed 入口未启用")
 	}
 	if cfg.Inbound.Mixed.Port <= 0 {
 		return "", fmt.Errorf("mixed 入口端口非法，不能执行走代理更新")
