@@ -126,6 +126,22 @@ export interface DynamicGroup {
   results: Record<string, GroupProbeRecord[]>
 }
 
+/** 主节点缺失明细适用于订阅更新后的阻塞告警。 */
+export interface MissingPrimaryWarningItem {
+  /** 受影响的动态组 key。 */
+  group: string
+  /** 已经消失的主节点引用。 */
+  member: string
+}
+
+/** 主节点缺失告警适用于要求用户确认配置自动清理结果。 */
+export interface PrimaryMissingWarning {
+  /** 告警版本，避免确认掉页面加载后新产生的告警。 */
+  id: number
+  /** 本次告警合并的全部主节点缺失事件。 */
+  items: MissingPrimaryWarningItem[]
+}
+
 /** 动态出口规则适用于目的地址固定走指定 backend。 */
 export interface DynamicOutboundRule {
   /** 匹配条件，支持 domain:xx.com 或 IP/CIDR。 */
@@ -356,6 +372,8 @@ export interface PanelState {
   sing_box_config: string
   /** 配置诊断提醒。 */
   warnings: string[]
+  /** 必须由用户确认的主备组主节点缺失告警。 */
+  primary_missing_warning?: PrimaryMissingWarning | null
 }
 
 /** 静态节点编辑表单。 */

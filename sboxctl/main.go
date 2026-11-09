@@ -1526,6 +1526,8 @@ type App struct {
 	DNSHealth *DNSHealthMonitor
 	// TrafficStats 保存当前进程采集的每日代理流量。
 	TrafficStats *TrafficStats
+	// PrimaryWarnings 保存订阅刷新造成的主备组主节点缺失告警。
+	PrimaryWarnings *PrimaryWarningStore
 }
 
 // LogProbeTriggerState 表示日志触发探测状态，适用于抑制异常风暴。
@@ -1698,6 +1700,8 @@ type WebStateResponse struct {
 	SingBoxConfig string `json:"sing_box_config"`
 	// Warnings 是配置诊断提醒。
 	Warnings []string `json:"warnings"`
+	// PrimaryMissingWarning 是必须由用户确认的主节点缺失告警。
+	PrimaryMissingWarning *PrimaryMissingWarning `json:"primary_missing_warning,omitempty"`
 }
 
 // WebBackend 表示前端展示的一个节点。
@@ -1906,6 +1910,12 @@ type WebSubscriptionUpdateRequest struct {
 	Name string `json:"name"`
 	// UseProxy 表示这次 Web 手动更新是否强制使用 update.proxy。
 	UseProxy bool `json:"use_proxy"`
+}
+
+// WebPrimaryWarningAckRequest 表示主节点缺失告警确认请求。
+type WebPrimaryWarningAckRequest struct {
+	// ID 是页面看到的告警版本。
+	ID uint64 `json:"id"`
 }
 
 // WebImportRequest 表示一次手动导入请求。
@@ -2148,6 +2158,7 @@ func NewAppFromFlags() *App {
 		HTTPClient:      NewHTTPClient(defaultTimeout, "", defaultUpdateDNS),
 		GroupRuntime:    NewGroupRuntime(),
 		TrafficStats:    NewTrafficStats(),
+		PrimaryWarnings: NewPrimaryWarningStore(),
 	}
 }
 
@@ -3415,6 +3426,9 @@ func normalizeDynamicGroupPrimary(mode string, primary string, members []string)
 		return ""
 	}
 	primary = strings.TrimSpace(primary)
+	if primary == "" {
+		return ""
+	}
 	if containsString(members, primary) {
 		return primary
 	}
@@ -3814,7 +3828,7 @@ func (a *App) FetchAndCacheSubscription(cfg *Config, sub Subscription) ([]ProxyB
 	if cfg.Update.SubscriptionUseProxy {
 		mode = "代理"
 	}
-	return a.fetchAndCacheSubscription(sub, mode)
+	return a.fetchAndCacheSubscription(cfg, sub, mode)
 }
 
 // FetchAndCacheSubscriptionForWeb 按 Web 按钮语义下载订阅，不读取自动更新开关。
@@ -3826,20 +3840,37 @@ func (a *App) FetchAndCacheSubscriptionForWeb(cfg *Config, sub Subscription, use
 	if useProxy {
 		mode = "代理"
 	}
-	return a.fetchAndCacheSubscription(sub, mode)
+	return a.fetchAndCacheSubscription(cfg, sub, mode)
 }
 
 // fetchAndCacheSubscription 下载订阅并保存缓存，调用方负责配置 HTTP client。
-func (a *App) fetchAndCacheSubscription(sub Subscription, mode string) ([]ProxyBackend, error) {
+func (a *App) fetchAndCacheSubscription(cfg *Config, sub Subscription, mode string) ([]ProxyBackend, error) {
 	a.Logger.Info("开始更新订阅 name=%s mode=%s", sub.Name, mode)
+	oldNodes, oldCacheErr := a.LoadSubscriptionCache(sub.Key)
 	nodes, skipped, failed, err := FetchSubscription(a.client(), sub)
 	if err != nil {
 		return nil, err
 	}
 	a.Logger.Info("订阅解析完成 name=%s nodes=%d skipped=%d failed=%d", sub.Name, len(nodes), skipped, failed)
+	nextCfg := *cfg
+	report := SubscriptionReconcileReport{}
+	if oldCacheErr == nil {
+		nextCfg, report = ReconcileSubscriptionReferences(*cfg, sub.Key, oldNodes, nodes)
+	}
 	changed, err := a.SaveSubscriptionCache(sub.Key, nodes)
 	if err != nil {
 		return nil, err
+	}
+	if report.Changed {
+		if err := SaveConfig(a.ConfigPath, nextCfg); err != nil {
+			_, restoreErr := a.SaveSubscriptionCache(sub.Key, oldNodes)
+			if restoreErr != nil {
+				return nil, errors.Join(err, fmt.Errorf("恢复旧订阅缓存失败: %w", restoreErr))
+			}
+			return nil, err
+		}
+		*cfg = nextCfg
+		a.primaryWarningStore().Record(report.MissingPrimaries)
 	}
 	if !changed {
 		a.Logger.Info("订阅缓存无变化，跳过写入 name=%s", sub.Name)
@@ -3951,6 +3982,7 @@ func (a *App) StartWebServer(cfg Config) (*WebServer, error) {
 	mux.HandleFunc("/api/state", web.withAuth(web.handleState))
 	mux.HandleFunc("/api/save", web.withAuth(web.handleSave))
 	mux.HandleFunc("/api/subscription/update", web.withAuth(web.handleSubscriptionUpdate))
+	mux.HandleFunc("/api/warnings/primary-missing/ack", web.withAuth(web.handlePrimaryWarningAck))
 	mux.HandleFunc("/api/import", web.withAuth(web.handleImport))
 	mux.HandleFunc("/api/node/probe", web.withAuth(web.handleNodeProbe))
 	mux.HandleFunc("/api/route/check", web.withAuth(web.handleRouteCheck))
@@ -4154,6 +4186,25 @@ func (w *WebServer) handleSubscriptionUpdate(rw http.ResponseWriter, req *http.R
 		return
 	}
 	writeJSON(rw, http.StatusOK, state)
+}
+
+// handlePrimaryWarningAck 清除页面已经确认的主节点缺失告警。
+// 示例：POST {"id":1} 且当前 ID 为 1 -> 200。
+func (w *WebServer) handlePrimaryWarningAck(rw http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		writeJSON(rw, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	var body WebPrimaryWarningAckRequest
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		writeJSON(rw, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if !w.App.primaryWarningStore().Acknowledge(body.ID) {
+		writeJSON(rw, http.StatusConflict, map[string]string{"error": "告警已变化，请刷新后重新确认"})
+		return
+	}
+	writeJSON(rw, http.StatusOK, map[string]bool{"acknowledged": true})
 }
 
 // handleImport 解析手动导入内容并替换同 key 导入缓存。
@@ -4458,8 +4509,9 @@ func (a *App) BuildWebState() (WebStateResponse, error) {
 			cfg.Policy.Overrides...),
 		DynamicOutbound: append(make([]DynamicOutboundRule, 0, len(cfg.Policy.DynamicOutbound)),
 			cfg.Policy.DynamicOutbound...),
-		SingBoxConfig: singBoxConfig,
-		Warnings:      append([]string{}, a.ConfigWarnings(cfg)...),
+		SingBoxConfig:         singBoxConfig,
+		Warnings:              append([]string{}, a.ConfigWarnings(cfg)...),
+		PrimaryMissingWarning: a.primaryWarningStore().Snapshot(),
 	}, nil
 }
 

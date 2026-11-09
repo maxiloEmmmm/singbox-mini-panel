@@ -286,6 +286,12 @@ export function normalizedPanelState(nextPanel: PanelState) {
     overrides: cloneOverrides(nextPanel.overrides),
     dynamic_outbound: cloneDynamicOutbound(nextPanel.dynamic_outbound),
     warnings: [...arrayOrEmpty(nextPanel.warnings)],
+    primary_missing_warning: nextPanel.primary_missing_warning
+      ? {
+          ...nextPanel.primary_missing_warning,
+          items: arrayOrEmpty(nextPanel.primary_missing_warning.items).map((item) => ({ ...item })),
+        }
+      : null,
   }
 }
 

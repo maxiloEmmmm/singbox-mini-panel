@@ -158,6 +158,8 @@ const selectedTrafficDay = ref('')
 const trafficFilter = ref('')
 const trafficLoading = ref(false)
 const trafficError = ref('')
+const acknowledgingPrimaryWarning = ref(false)
+const primaryWarningError = ref('')
 
 const isLoggedIn = computed(() => token.value.length > 0)
 const setupRequired = computed(() => health.value?.setup_required === true)
@@ -185,6 +187,7 @@ const selectedOverrideRule = computed(
 )
 const activeOutboundText = computed(() => outboundDisplayLabel(selectedTag.value))
 const configWarnings = computed(() => panel.value?.warnings || [])
+const primaryMissingWarning = computed(() => panel.value?.primary_missing_warning || null)
 const filteredConnections = computed(() => {
   const query = connectionFilter.value.trim().toLowerCase()
   return connections.value.filter((item) => {
@@ -470,6 +473,33 @@ function applyPanelState(nextPanel: PanelState) {
   savedAdsBlock.value = adsBlock.value
   savedHostsOverride.value = hostsOverride.value
   savedProxyRuleSets.value = [...proxyRuleSets.value]
+}
+
+// 适用场景：确认订阅更新自动移除的主备组主节点；示例：告警 ID 3 -> 清除当前内存告警。
+async function acknowledgePrimaryMissingWarning() {
+  const warning = primaryMissingWarning.value
+  if (!warning || acknowledgingPrimaryWarning.value) {
+    return
+  }
+  acknowledgingPrimaryWarning.value = true
+  primaryWarningError.value = ''
+  try {
+    const response = await fetch('/api/warnings/primary-missing/ack', {
+      method: 'POST',
+      headers: authHeaders(token.value),
+      body: JSON.stringify({ id: warning.id }),
+    })
+    if (!response.ok) {
+      throw new Error(await readError(response))
+    }
+    if (panel.value?.primary_missing_warning?.id === warning.id) {
+      panel.value = { ...panel.value, primary_missing_warning: null }
+    }
+  } catch (error) {
+    primaryWarningError.value = error instanceof Error ? error.message : '确认告警失败'
+  } finally {
+    acknowledgingPrimaryWarning.value = false
+  }
 }
 
 // 适用场景：切换静态节点协议时补齐该协议的常见默认项。
@@ -2155,6 +2185,33 @@ onUnmounted(() => {
           </ul>
         </section>
       </div>
+    </a-modal>
+
+    <a-modal
+      :open="primaryMissingWarning !== null"
+      title="主备组主节点已被订阅移除"
+      :closable="false"
+      :mask-closable="false"
+      :keyboard="false"
+      width="560px"
+    >
+      <p>订阅更新后，以下主节点已经不存在。相关引用已自动移除，请确认新的组配置。</p>
+      <ul class="primary-warning-list">
+        <li v-for="item in primaryMissingWarning?.items || []" :key="`${item.group}:${item.member}`">
+          <strong>{{ item.group }}</strong>
+          <span>{{ item.member }}</span>
+        </li>
+      </ul>
+      <a-alert v-if="primaryWarningError" :message="primaryWarningError" type="error" show-icon />
+      <template #footer>
+        <a-button
+          type="primary"
+          :loading="acknowledgingPrimaryWarning"
+          @click="acknowledgePrimaryMissingWarning"
+        >
+          确认并继续
+        </a-button>
+      </template>
     </a-modal>
 
     <a-alert
