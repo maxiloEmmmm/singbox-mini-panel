@@ -576,8 +576,12 @@ function saveStaticDraft() {
     pageError.value = `静态节点 key 重复: ${key}`
     return
   }
-  if (!item.server.trim()) {
+  if (protocol !== 'cf' && !item.server.trim()) {
     pageError.value = '静态节点 server 必填'
+    return
+  }
+  if (protocol === 'cf' && !item.kv_key.trim()) {
+    pageError.value = 'CF 静态节点 kv-key 必填'
     return
   }
   if ((protocol === 'hy2' || protocol === 'trojan' || protocol === 'anytls') && !item.password.trim()) {
@@ -606,8 +610,9 @@ function saveStaticDraft() {
     tag: `static-${key}`,
     name: item.name.trim() || key,
     protocol,
-    server: item.server.trim(),
-    port: Number(item.port) || 443,
+    server: protocol === 'cf' ? '' : item.server.trim(),
+    port: protocol === 'cf' ? 0 : Number(item.port) || 443,
+    kv_key: protocol === 'cf' ? item.kv_key.trim() : '',
     source: 'static',
     username: protocol === 'socks' || protocol === 'http' ? item.username.trim() : '',
     password: protocol === 'hy2' || protocol === 'ss' || protocol === 'trojan' || protocol === 'anytls' || protocol === 'socks' || protocol === 'http' ? item.password.trim() : '',
@@ -1642,6 +1647,9 @@ function selectNode(node: BackendNode) {
 
 // 适用场景：格式化节点协议和服务端信息。
 function nodeSubtitle(node: BackendNode) {
+  if (node.protocol === 'cf') {
+    return [node.kv_key || '-', node.cf_colo || '未连接'].join(' · ')
+  }
   return `${node.server}:${node.port}`
 }
 
@@ -1805,6 +1813,7 @@ async function saveAll(confirmOverwrite: boolean | Event = false) {
           name: node.name,
           server: node.server,
           port: Number(node.port),
+          kv_key: node.kv_key || '',
           password: node.password || '',
           username: node.username || '',
           detour: node.detour || '',
@@ -2758,6 +2767,7 @@ onUnmounted(() => {
                   <a-select-option value="anytls">AnyTLS</a-select-option>
                   <a-select-option value="socks">SOCKS5</a-select-option>
                   <a-select-option value="http">HTTP</a-select-option>
+                  <a-select-option value="cf">CF</a-select-option>
                 </a-select>
               </label>
               <label class="field-row">
@@ -2768,13 +2778,17 @@ onUnmounted(() => {
                 <span>名称</span>
                 <a-input v-model:value="staticForm.name" placeholder="日本JP-HY2" />
               </label>
-              <label class="field-row">
+              <label v-if="staticForm.protocol !== 'cf'" class="field-row">
                 <span>server</span>
                 <a-input v-model:value="staticForm.server" placeholder="example.com" />
               </label>
-              <label class="field-row">
+              <label v-if="staticForm.protocol !== 'cf'" class="field-row">
                 <span>port</span>
                 <a-input v-model:value="staticForm.port" type="number" />
+              </label>
+              <label v-if="staticForm.protocol === 'cf'" class="field-row">
+                <span>kv-key</span>
+                <a-input v-model:value="staticForm.kv_key" placeholder="cfp/demo" />
               </label>
               <div class="field-row">
                 <span>detour</span>
@@ -2801,7 +2815,7 @@ onUnmounted(() => {
                   <a-input v-model:value="staticForm.password" />
                 </label>
               </template>
-              <label v-if="staticForm.protocol !== 'ss' && staticForm.protocol !== 'socks' && staticForm.protocol !== 'http'" class="field-row">
+              <label v-if="staticForm.protocol !== 'cf' && staticForm.protocol !== 'ss' && staticForm.protocol !== 'socks' && staticForm.protocol !== 'http'" class="field-row">
                 <span>sni</span>
                 <a-input v-model:value="staticForm.sni" />
               </label>
@@ -2876,7 +2890,7 @@ onUnmounted(() => {
                   <a-input v-model:value="staticForm.plugin_opts" placeholder="obfs=http;obfs-host=example.com" />
                 </label>
               </template>
-              <label v-if="staticForm.protocol !== 'ss' && staticForm.protocol !== 'socks' && staticForm.protocol !== 'http'" class="field-row inline-field">
+              <label v-if="staticForm.protocol !== 'cf' && staticForm.protocol !== 'ss' && staticForm.protocol !== 'socks' && staticForm.protocol !== 'http'" class="field-row inline-field">
                 <span>insecure</span>
                 <a-switch v-model:checked="staticForm.insecure" size="small" />
               </label>

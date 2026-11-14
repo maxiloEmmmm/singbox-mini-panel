@@ -46,6 +46,7 @@ export function serializeStaticNodes(nodes: BackendNode[]) {
     name: node.name,
     server: node.server,
     port: node.port,
+    kv_key: node.kv_key || '',
     username: node.username || '',
     password: node.password || '',
     detour: node.detour || '',
@@ -95,6 +96,9 @@ export function sortedRuleSets(items: string[]) {
 
 /** normalizeStaticProtocol 规范化静态节点协议，兼容旧配置空协议。 */
 export function normalizeStaticProtocol(protocol: string) {
+  if (protocol === 'cf') {
+    return 'cf'
+  }
   if (protocol === 'vmess') {
     return 'vmess'
   }
@@ -189,6 +193,7 @@ export function emptyStaticForm(): StaticForm {
     name: '',
     server: '',
     port: 443,
+    kv_key: '',
     username: '',
     password: '',
     detour: '',
@@ -240,6 +245,7 @@ export function staticFormFromNode(node: BackendNode): StaticForm {
     name: node.name,
     server: node.server,
     port: node.port,
+    kv_key: node.kv_key || '',
     username: node.username || '',
     password: node.password || '',
     detour: node.detour || '',

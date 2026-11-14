@@ -381,6 +381,8 @@ const (
 	staticProtocolSocks = "socks"
 	// staticProtocolHTTP 表示静态节点使用 HTTP CONNECT 代理。
 	staticProtocolHTTP = "http"
+	// staticProtocolCF 表示静态节点使用内置 CF mux 出站。
+	staticProtocolCF = "cf"
 )
 
 // PolicyConfig 表示路由最终策略，适用于多个代理后端场景。
@@ -665,7 +667,7 @@ type HTTPBackend struct {
 
 // StaticBackend 表示 Web 可编辑的扁平静态节点。
 type StaticBackend struct {
-	// Protocol 是节点协议，支持 hy2、vmess、ss、trojan、anytls、socks 和 http。
+	// Protocol 是节点协议，支持 hy2、vmess、ss、trojan、anytls、socks、http 和 cf。
 	Protocol string `yaml:"protocol,omitempty" json:"protocol"`
 	// Key 是静态列表内唯一机器标识。
 	Key string `yaml:"key,omitempty" json:"key"`
@@ -677,6 +679,8 @@ type StaticBackend struct {
 	Server string `yaml:"server,omitempty" json:"server"`
 	// Port 是服务端端口。
 	Port int `yaml:"port,omitempty" json:"port"`
+	// KVKey 是 CF 出站查询动态 daemon 地址使用的完整 KV key。
+	KVKey string `yaml:"kv_key,omitempty" json:"kv_key"`
 	// Password 是 HY2、Shadowsocks、Trojan、AnyTLS、SOCKS 或 HTTP 密码。
 	Password string `yaml:"password,omitempty" json:"password"`
 	// Username 是 SOCKS5 或 HTTP 代理认证用户名。
@@ -1155,6 +1159,12 @@ func (b *StaticBackend) SetBackendSource(source string) {
 // BuildOutbound 按协议构造静态节点 sing-box outbound。
 func (b *StaticBackend) BuildOutbound() map[string]any {
 	switch b.BackendProtocol() {
+	case staticProtocolCF:
+		return applyStaticDetour(map[string]any{
+			"type":   staticProtocolCF,
+			"tag":    b.Tag,
+			"kv_key": b.KVKey,
+		}, b.RuntimeDetour)
 	case staticProtocolVMess:
 		node := b.toVMessBackend()
 		return applyStaticDetour(node.BuildOutbound(), b.RuntimeDetour)
@@ -1718,6 +1728,14 @@ type WebBackend struct {
 	Server string `json:"server"`
 	// Port 是节点端口。
 	Port int `json:"port"`
+	// KVKey 是 CF 出站查询动态 daemon 地址使用的完整 KV key。
+	KVKey string `json:"kv_key,omitempty"`
+	// CFColo 是本次 CF WSS 握手命中的三位 POP 代码。
+	CFColo string `json:"cf_colo,omitempty"`
+	// CFConnected 表示对应的单 WSS 载体当前仍连接。
+	CFConnected bool `json:"cf_connected,omitempty"`
+	// CFConnectedAt 是最近成功建立 CF WSS 的时间。
+	CFConnectedAt string `json:"cf_connected_at,omitempty"`
 	// Source 是节点来源。
 	Source string `json:"source"`
 	// Password 是 HY2 静态节点认证密码或 Shadowsocks 密码。
@@ -4431,6 +4449,11 @@ func (a *App) BuildWebState() (WebStateResponse, error) {
 		node.SetBackendTag(RuntimeBackendTag("static", node.BackendKey()))
 		staticNodes = append(staticNodes, WebBackendFromBackend(&node, "static"))
 	}
+	cfStatuses, statusErr := LoadCFOutboundStatuses(defaultCFOutboundStatusDirectory)
+	if statusErr != nil {
+		a.Logger.Warn("读取 CF outbound 运行状态失败 err=%v", statusErr)
+	}
+	ApplyCFOutboundStatuses(staticNodes, cfStatuses)
 	subscriptions := make([]WebSubscription, 0, len(cfg.Backend.Subscription))
 	for _, sub := range cfg.Backend.Subscription {
 		group := WebSubscription{
@@ -5972,6 +5995,8 @@ func normalizeStaticProtocol(protocol string) string {
 		return staticProtocolSocks
 	case staticProtocolHTTP:
 		return staticProtocolHTTP
+	case staticProtocolCF:
+		return staticProtocolCF
 	default:
 		return staticProtocolHY2
 	}
@@ -5991,21 +6016,28 @@ func NormalizeStaticBackendsForSave(nodes []StaticBackend) ([]StaticBackend, err
 		if seen[node.Key] {
 			return nil, fmt.Errorf("静态节点 key 重复: %s", node.Key)
 		}
-		if strings.TrimSpace(node.Server) == "" {
+		if node.Protocol != staticProtocolCF && strings.TrimSpace(node.Server) == "" {
 			return nil, fmt.Errorf("静态节点 %s server 为空", node.Key)
 		}
-		if node.Port <= 0 || node.Port > 65535 {
+		if node.Protocol != staticProtocolCF && (node.Port <= 0 || node.Port > 65535) {
 			return nil, fmt.Errorf("静态节点 %s port 非法", node.Key)
 		}
 		clean := StaticBackend{
 			Protocol: node.Protocol,
 			Key:      node.Key,
 			Name:     strings.TrimSpace(node.Name),
-			Server:   strings.TrimSpace(node.Server),
-			Port:     node.Port,
 			Detour:   strings.TrimSpace(node.Detour),
 		}
+		if node.Protocol != staticProtocolCF {
+			clean.Server = strings.TrimSpace(node.Server)
+			clean.Port = node.Port
+		}
 		switch node.Protocol {
+		case staticProtocolCF:
+			if strings.TrimSpace(node.KVKey) == "" {
+				return nil, fmt.Errorf("静态节点 %s kv_key 为空", node.Key)
+			}
+			clean.KVKey = strings.TrimSpace(node.KVKey)
 		case staticProtocolVMess:
 			if strings.TrimSpace(node.UUID) == "" {
 				return nil, fmt.Errorf("静态节点 %s uuid 为空", node.Key)
@@ -6156,6 +6188,7 @@ func WebBackendFromBackend(node ProxyBackend, source string) WebBackend {
 	}
 	if source == "static" {
 		if staticNode, ok := node.(*StaticBackend); ok {
+			item.KVKey = staticNode.KVKey
 			item.Username = staticNode.Username
 			item.Password = staticNode.Password
 			item.SNI = staticNode.SNI

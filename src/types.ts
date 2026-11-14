@@ -52,6 +52,14 @@ export interface BackendNode {
   min_idle_session?: number
   /** 静态节点链式拨号前置出口引用。 */
   detour?: string
+  /** CF 动态 daemon 发现使用的完整 KV key。 */
+  kv_key?: string
+  /** 本次 CF WSS 握手命中的三位 POP 代码。 */
+  cf_colo?: string
+  /** CF 单 WSS 载体当前是否连接。 */
+  cf_connected?: boolean
+  /** 最近成功建立 CF WSS 的时间。 */
+  cf_connected_at?: string
 }
 
 /** 订阅分组适用于左侧纵向列表。 */
@@ -388,6 +396,8 @@ export interface StaticForm {
   server: string
   /** 服务端端口。 */
   port: number
+  /** CF 动态 daemon 发现使用的完整 KV key。 */
+  kv_key: string
   /** 协议密码。 */
   password: string
   /** SOCKS5/HTTP 用户名。 */
