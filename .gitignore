@@ -9,6 +9,7 @@ sboxctl/web/dist/
 
 # Go 构建产物
 sboxctl/sboxctl
+sboxctl/sing-box
 sboxctl/*.test
 *.test
 *.out
