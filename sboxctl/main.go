@@ -1510,8 +1510,10 @@ type App struct {
 	SingBoxConfig string
 	// Logger 是整体日志器。
 	Logger *Logger
-	// HTTPClient 复用 geofile 和订阅下载连接。
-	HTTPClient *http.Client
+	// ConfigMutex 串行化配置文件写入和订阅引用更新。
+	ConfigMutex sync.Mutex
+	// RuntimeMutex 串行化数据面切换与停止。
+	RuntimeMutex sync.Mutex
 	// GroupRuntime 保存动态组内存探测状态。
 	GroupRuntime *GroupRuntime
 	// DynamicProbeMutex 串行化动态组探测，避免多个触发源同时切换。
@@ -1618,8 +1620,10 @@ type WebServer struct {
 	App *App
 	// Server 是标准库 HTTP 服务。
 	Server *http.Server
-	// Mutex 串行化保存和重启操作。
+	// Mutex 保护配置提交顺序和后台应用队列。
 	Mutex sync.Mutex
+	// Apply 是最新一次保存的应用状态及队列。
+	Apply webApplyQueue
 	// LoginFailures 保存每个 IP 的失败状态。
 	LoginFailures map[string]*LoginFailure
 	// FailureMutex 保护登录失败状态。
@@ -2173,7 +2177,6 @@ func NewAppFromFlags() *App {
 		GeoDir:          *geoDir,
 		SubscriptionDir: defaultSubscriptionDir,
 		SingBoxConfig:   *singBoxConfig,
-		HTTPClient:      NewHTTPClient(defaultTimeout, "", defaultUpdateDNS),
 		GroupRuntime:    NewGroupRuntime(),
 		TrafficStats:    NewTrafficStats(),
 		PrimaryWarnings: NewPrimaryWarningStore(),
@@ -2487,42 +2490,9 @@ func (a *App) Update(forceMissing bool) error {
 		return err
 	}
 	a.ensureLogger(cfg.Log)
-	a.configureHTTPClient(cfg.Update, cfg.Update.GeoFilesUseProxy)
-	a.Logger.Info("开始更新 geofiles")
-	if err := os.MkdirAll(a.GeoDir, 0755); err != nil {
+	if err := a.updateGeoFiles(cfg.Update, forceMissing); err != nil {
 		return err
 	}
-	changed := 0
-	total := 0
-	for _, name := range geoIPNames {
-		total++
-		ok, err := a.downloadGeo("geoip", name, forceMissing)
-		if err != nil {
-			if forceMissing {
-				return err
-			}
-			a.Logger.Warn("geoip 更新失败 name=%s err=%v", name, err)
-			continue
-		}
-		if ok {
-			changed++
-		}
-	}
-	for _, name := range geoSiteNames {
-		total++
-		ok, err := a.downloadGeo("geosite", name, forceMissing)
-		if err != nil {
-			if forceMissing {
-				return err
-			}
-			a.Logger.Warn("geosite 更新失败 name=%s err=%v", name, err)
-			continue
-		}
-		if ok {
-			changed++
-		}
-	}
-	a.Logger.Info("geofiles 更新完成 changed=%d total=%d", changed, total)
 	if err := a.UpdateSubscriptionCaches(&cfg, forceMissing); err != nil {
 		return err
 	}
@@ -2541,15 +2511,23 @@ func (a *App) Render() error {
 
 // GenerateSingBoxConfigText 生成 Web 展示用 sing-box JSON。
 func (a *App) GenerateSingBoxConfigText(cfg Config) (string, error) {
-	backends, err := a.ResolveBackends(&cfg, false)
+	return a.generateSingBoxConfigText(webConfigSnapshot{
+		Config: cfg, ForceDirect: readOptionalText(a.ForceDirectPath), ForceProxy: readOptionalText(a.ForceProxyPath),
+	})
+}
+
+// generateSingBoxConfigText 使用配置快照和本地缓存生成 JSON。示例：TUN 配置 -> 带 tun-in 的 JSON。
+func (a *App) generateSingBoxConfigText(snapshot webConfigSnapshot) (string, error) {
+	cfg := snapshot.Config
+	backends, err := a.resolveBackends(&cfg, false, true)
 	if err != nil {
 		return "", err
 	}
-	directRules, err := ParseLocalRulesFile(a.ForceDirectPath)
+	directRules, err := ParseLocalRules(strings.NewReader(snapshot.ForceDirect))
 	if err != nil {
 		return "", err
 	}
-	proxyRules, err := ParseLocalRulesFile(a.ForceProxyPath)
+	proxyRules, err := ParseLocalRules(strings.NewReader(snapshot.ForceProxy))
 	if err != nil {
 		return "", err
 	}
@@ -2572,7 +2550,6 @@ func (a *App) render(ensureMissing bool) error {
 		return err
 	}
 	a.ensureLogger(cfg.Log)
-	a.configureHTTPClient(cfg.Update, cfg.Update.GeoFilesUseProxy)
 	a.Logger.Info("开始渲染 sing-box 配置")
 	if ensureMissing {
 		if err := a.Update(true); err != nil {
@@ -2616,6 +2593,8 @@ func (a *App) render(ensureMissing bool) error {
 
 // Start 渲染配置后启动 sing-box。
 func (a *App) Start() error {
+	a.RuntimeMutex.Lock()
+	defer a.RuntimeMutex.Unlock()
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return err
@@ -2623,13 +2602,13 @@ func (a *App) Start() error {
 	a.ensureLogger(cfg.Log)
 	if !ServiceEnabled(cfg) {
 		a.Logger.Info("sing-box 服务开关关闭，跳过启动")
-		return a.Stop()
+		return a.stop()
 	}
 	a.Logger.Info("启动流程开始")
 	if err := a.Render(); err != nil {
 		if errors.Is(err, ErrNoAvailableBackend) {
 			a.Logger.Warn("没有可用 backend，跳过 sing-box 启动")
-			return a.Stop()
+			return a.stop()
 		}
 		return err
 	}
@@ -2646,6 +2625,13 @@ func (a *App) Start() error {
 
 // Stop 停止 sing-box。
 func (a *App) Stop() error {
+	a.RuntimeMutex.Lock()
+	defer a.RuntimeMutex.Unlock()
+	return a.stop()
+}
+
+// stop 停止数据面，调用方持有 RuntimeMutex。示例：服务关闭 -> 释放 sing-box。
+func (a *App) stop() error {
 	cfg, _ := a.LoadConfig()
 	a.ensureLogger(cfg.Log)
 	a.Logger.Info("停止 sing-box")
@@ -2696,13 +2682,12 @@ if [ "$(id -u)" != "0" ]; then
 fi
 
 log "停止 sing-box 进程"
+# 按进程名匹配，避免匹配命令行时杀掉清理脚本自己的 sh -c。
 try pkill -TERM -x sing-box
 try pkill -TERM -x singbox
-try pkill -TERM -f '[s]ing-box.*run'
 sleep 2
 try pkill -KILL -x sing-box
 try pkill -KILL -x singbox
-try pkill -KILL -f '[s]ing-box.*run'
 
 log "清理 systemd-resolved 的 TUN DNS 状态"
 for dev in sbox0 singbox_tun tun tun0 tun1 tun2 tun3 tun4 tun5; do
@@ -2830,6 +2815,8 @@ log "cleanup-tun 完成"
 
 // Restart 渲染配置后重启 sing-box。
 func (a *App) Restart() error {
+	a.RuntimeMutex.Lock()
+	defer a.RuntimeMutex.Unlock()
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return err
@@ -2837,13 +2824,13 @@ func (a *App) Restart() error {
 	a.ensureLogger(cfg.Log)
 	if !ServiceEnabled(cfg) {
 		a.Logger.Info("sing-box 服务开关关闭，执行停止")
-		return a.Stop()
+		return a.stop()
 	}
 	a.Logger.Info("重启流程开始")
 	if err := a.render(true); err != nil {
 		if errors.Is(err, ErrNoAvailableBackend) {
 			a.Logger.Warn("没有可用 backend，停止 sing-box 数据面")
-			return a.Stop()
+			return a.stop()
 		}
 		return err
 	}
@@ -2884,6 +2871,7 @@ func (a *App) Web() error {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	defer server.Apply.Cancel()
 	go a.TrafficStats.Run(ctx, a.FetchWebConnections)
 	a.Logger.Info("web 面板启动 addr=%s", server.Server.Addr)
 	return server.Server.ListenAndServe()
@@ -2897,8 +2885,12 @@ func (a *App) Daemon() error {
 	}
 	a.ensureLogger(cfg.Log)
 	a.Logger.Info("daemon 启动")
-	if err := a.Start(); err != nil {
-		return err
+	startErr := a.Start()
+	if startErr != nil {
+		if !cfg.Web.Enabled {
+			return startErr
+		}
+		a.Logger.Warn("sing-box 启动失败，可通过 Web 修正配置: %v", startErr)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -2912,6 +2904,10 @@ func (a *App) Daemon() error {
 		webServer, err = a.StartWebServer(cfg)
 		if err != nil {
 			return err
+		}
+		defer webServer.Apply.Cancel()
+		if startErr != nil {
+			webServer.Apply.Status = webApplyStatus{State: "failed", Error: startErr.Error()}
 		}
 		go func() {
 			if serveErr := webServer.Server.ListenAndServe(); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
@@ -2932,6 +2928,7 @@ func (a *App) Daemon() error {
 			cancel()
 			a.Logger.Info("daemon 收到退出信号: %s", sig)
 			if webServer != nil {
+				webServer.Apply.Cancel()
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				_ = webServer.Server.Shutdown(ctx)
 				cancel()
@@ -3291,6 +3288,11 @@ func (a *App) SwitchPrimaryBackupAfterProbe(group DynamicGroupConfig, groupTag s
 
 // ResolveMemberTagMap 解析所有真实节点链路 key 到 outbound tag。
 func (a *App) ResolveMemberTagMap(cfg *Config) (map[string]string, error) {
+	return a.resolveMemberTagMap(cfg, false)
+}
+
+// resolveMemberTagMap 可限定为只读缓存。示例：cacheOnly=true -> 面板读取不下载订阅。
+func (a *App) resolveMemberTagMap(cfg *Config, cacheOnly bool) (map[string]string, error) {
 	refs := map[string]string{}
 	for _, b := range cfg.Backend.Static {
 		node := b
@@ -3301,7 +3303,13 @@ func (a *App) ResolveMemberTagMap(cfg *Config) (map[string]string, error) {
 		if !sub.Enabled {
 			continue
 		}
-		nodes, err := a.ResolveSubscriptionNodes(cfg, sub, false)
+		var nodes []ProxyBackend
+		var err error
+		if cacheOnly {
+			nodes, err = a.LoadSubscriptionCache(sub.Key)
+		} else {
+			nodes, err = a.ResolveSubscriptionNodes(cfg, sub, false)
+		}
 		if err != nil {
 			a.Logger.Warn("动态组跳过不可用订阅 name=%s err=%v", sub.Name, err)
 			continue
@@ -3681,6 +3689,11 @@ func (a *App) LoadConfig() (Config, error) {
 
 // ResolveBackends 合并静态后端和订阅后端，启动路径只在缓存缺失时联网。
 func (a *App) ResolveBackends(cfg *Config, refreshSubscriptions bool) ([]ProxyBackend, error) {
+	return a.resolveBackends(cfg, refreshSubscriptions, false)
+}
+
+// resolveBackends 可限定为只读订阅缓存。示例：cacheOnly=true -> 缺缓存时跳过订阅。
+func (a *App) resolveBackends(cfg *Config, refreshSubscriptions, cacheOnly bool) ([]ProxyBackend, error) {
 	result := make([]ProxyBackend, 0, len(cfg.Backend.Static))
 	memberTags := map[string]string{}
 	staticNodes := make([]*StaticBackend, 0, len(cfg.Backend.Static))
@@ -3697,7 +3710,13 @@ func (a *App) ResolveBackends(cfg *Config, refreshSubscriptions bool) ([]ProxyBa
 		if !sub.Enabled {
 			continue
 		}
-		nodes, err := a.ResolveSubscriptionNodes(cfg, sub, refreshSubscriptions)
+		var nodes []ProxyBackend
+		var err error
+		if cacheOnly {
+			nodes, err = a.LoadSubscriptionCache(sub.Key)
+		} else {
+			nodes, err = a.ResolveSubscriptionNodes(cfg, sub, refreshSubscriptions)
+		}
 		if err != nil {
 			a.Logger.Warn("跳过不可用订阅 name=%s err=%v", sub.Name, err)
 			continue
@@ -3839,41 +3858,48 @@ func (a *App) UpdateSubscriptionCaches(cfg *Config, missingOnly bool) error {
 
 // FetchAndCacheSubscription 下载订阅并保存缓存，失败时不会覆盖旧缓存。
 func (a *App) FetchAndCacheSubscription(cfg *Config, sub Subscription) ([]ProxyBackend, error) {
-	if err := a.configureSubscriptionHTTPClient(*cfg, cfg.Update.SubscriptionUseProxy); err != nil {
-		return nil, err
-	}
-	mode := "直连"
-	if cfg.Update.SubscriptionUseProxy {
-		mode = "代理"
-	}
-	return a.fetchAndCacheSubscription(cfg, sub, mode)
+	return a.FetchAndCacheSubscriptionForWeb(cfg, sub, cfg.Update.SubscriptionUseProxy)
 }
 
 // FetchAndCacheSubscriptionForWeb 按 Web 按钮语义下载订阅，不读取自动更新开关。
 func (a *App) FetchAndCacheSubscriptionForWeb(cfg *Config, sub Subscription, useProxy bool) ([]ProxyBackend, error) {
-	if err := a.configureSubscriptionHTTPClient(*cfg, useProxy); err != nil {
+	client, err := subscriptionHTTPClient(*cfg, useProxy)
+	if err != nil {
 		return nil, err
 	}
+	defer client.CloseIdleConnections()
 	mode := "直连"
 	if useProxy {
 		mode = "代理"
 	}
-	return a.fetchAndCacheSubscription(cfg, sub, mode)
+	return a.fetchAndCacheSubscription(cfg, sub, mode, client)
 }
 
-// fetchAndCacheSubscription 下载订阅并保存缓存，调用方负责配置 HTTP client。
-func (a *App) fetchAndCacheSubscription(cfg *Config, sub Subscription, mode string) ([]ProxyBackend, error) {
+// fetchAndCacheSubscription 下载订阅并保存缓存。示例：订阅更新 -> 缓存新节点并清理旧引用。
+func (a *App) fetchAndCacheSubscription(cfg *Config, sub Subscription, mode string, client *http.Client) ([]ProxyBackend, error) {
 	a.Logger.Info("开始更新订阅 name=%s mode=%s", sub.Name, mode)
-	oldNodes, oldCacheErr := a.LoadSubscriptionCache(sub.Key)
-	nodes, skipped, failed, err := FetchSubscription(a.client(), sub)
+	nodes, skipped, failed, err := FetchSubscription(client, sub)
 	if err != nil {
 		return nil, err
 	}
 	a.Logger.Info("订阅解析完成 name=%s nodes=%d skipped=%d failed=%d", sub.Name, len(nodes), skipped, failed)
-	nextCfg := *cfg
+
+	// 下载期间允许保存新配置，提交时只处理仍指向同一来源的订阅。
+	a.ConfigMutex.Lock()
+	defer a.ConfigMutex.Unlock()
+	latest, err := a.LoadConfig()
+	if err != nil {
+		return nil, err
+	}
+	current, exists := findSubscription(latest, sub.Key)
+	if !exists || !sameSubscriptionFetchSource(current, sub) {
+		return nil, fmt.Errorf("订阅 %s 在下载期间已变更", sub.Key)
+	}
+	oldNodes, oldCacheErr := a.LoadSubscriptionCache(sub.Key)
+	nextCfg := latest
 	report := SubscriptionReconcileReport{}
 	if oldCacheErr == nil {
-		nextCfg, report = ReconcileSubscriptionReferences(*cfg, sub.Key, oldNodes, nodes)
+		nextCfg, report = ReconcileSubscriptionReferences(latest, sub.Key, oldNodes, nodes)
 	}
 	changed, err := a.SaveSubscriptionCache(sub.Key, nodes)
 	if err != nil {
@@ -3887,9 +3913,9 @@ func (a *App) fetchAndCacheSubscription(cfg *Config, sub Subscription, mode stri
 			}
 			return nil, err
 		}
-		*cfg = nextCfg
 		a.primaryWarningStore().Record(report.MissingPrimaries)
 	}
+	*cfg = nextCfg
 	if !changed {
 		a.Logger.Info("订阅缓存无变化，跳过写入 name=%s", sub.Name)
 	}
@@ -3983,9 +4009,11 @@ func (a *App) LoadSubscriptionCache(name string) ([]ProxyBackend, error) {
 
 // StartWebServer 构造内置 Web 服务，适用于 daemon 和前台 web 命令。
 func (a *App) StartWebServer(cfg Config) (*WebServer, error) {
+	ctx, cancel := context.WithCancel(context.Background())
 	mux := http.NewServeMux()
 	web := &WebServer{
 		App:           a,
+		Apply:         webApplyQueue{Context: ctx, Cancel: cancel},
 		LoginFailures: map[string]*LoginFailure{},
 	}
 	addr := net.JoinHostPort(cfg.Web.Listen, strconv.Itoa(cfg.Web.Port))
@@ -3998,6 +4026,7 @@ func (a *App) StartWebServer(cfg Config) (*WebServer, error) {
 	mux.HandleFunc("/api/login", web.handleLogin)
 	mux.HandleFunc("/api/setup", web.handleSetup)
 	mux.HandleFunc("/api/state", web.withAuth(web.handleState))
+	mux.HandleFunc("/api/apply", web.withAuth(web.handleApplyStatus))
 	mux.HandleFunc("/api/save", web.withAuth(web.handleSave))
 	mux.HandleFunc("/api/subscription/update", web.withAuth(web.handleSubscriptionUpdate))
 	mux.HandleFunc("/api/warnings/primary-missing/ack", web.withAuth(web.handlePrimaryWarningAck))
@@ -4112,9 +4141,12 @@ func (w *WebServer) handleSave(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 	w.Mutex.Lock()
-	beforeCfg, beforeCfgErr := w.App.LoadConfig()
-	beforeForceProxy := readOptionalText(w.App.ForceProxyPath)
-	beforeForceDirect := readOptionalText(w.App.ForceDirectPath)
+	before, err := w.App.loadWebConfigSnapshot()
+	if err != nil {
+		w.Mutex.Unlock()
+		writeJSON(rw, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
 	if err := w.App.SaveWebState(body); err != nil {
 		w.Mutex.Unlock()
 		var conflict ConfigConflictError
@@ -4128,35 +4160,22 @@ func (w *WebServer) handleSave(rw http.ResponseWriter, req *http.Request) {
 		writeJSON(rw, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	afterCfg, afterCfgErr := w.App.LoadConfig()
-	if beforeCfgErr == nil && afterCfgErr == nil {
-		if err := w.App.UpdateChangedSubscriptions(&beforeCfg, &afterCfg); err != nil {
-			w.Mutex.Unlock()
-			writeJSON(rw, http.StatusBadGateway, map[string]string{"error": err.Error()})
-			return
-		}
-	}
-	plan := WebApplyPlan{ServiceEnabled: body.ServiceEnabled, Restart: true}
-	if beforeCfgErr == nil && afterCfgErr == nil {
-		plan = BuildWebApplyPlan(beforeCfg, beforeForceProxy, beforeForceDirect, afterCfg, body.ForceProxy, body.ForceDirect)
-	}
-	if err := w.App.ApplyWebPlan(plan); err != nil {
+	after, err := w.App.loadWebConfigSnapshot()
+	if err != nil {
 		w.Mutex.Unlock()
-		if w.App.Logger != nil {
-			w.App.Logger.Error("保存后应用失败: %v", err)
-		}
 		writeJSON(rw, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	w.enqueueApply(before, after, false)
 	w.Mutex.Unlock()
 
-	state, err := w.App.BuildWebState()
+	state, err := w.App.buildWebState(false)
 	if err != nil {
 		writeJSON(rw, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 
-	writeJSON(rw, http.StatusOK, state)
+	writeJSON(rw, http.StatusAccepted, state)
 }
 
 // handleSubscriptionUpdate 刷新单个订阅缓存，失败时保留旧缓存。
@@ -4180,8 +4199,6 @@ func (w *WebServer) handleSubscriptionUpdate(rw http.ResponseWriter, req *http.R
 		writeJSON(rw, http.StatusNotFound, map[string]string{"error": "subscription not found"})
 		return
 	}
-	w.Mutex.Lock()
-	defer w.Mutex.Unlock()
 	_, err = w.App.FetchAndCacheSubscriptionForWeb(&cfg, sub, body.UseProxy)
 	if err != nil {
 		writeJSON(rw, http.StatusBadGateway, map[string]string{"error": err.Error()})
@@ -4190,11 +4207,7 @@ func (w *WebServer) handleSubscriptionUpdate(rw http.ResponseWriter, req *http.R
 	if err := SaveRuntimeState(RuntimeState{LastUpdateSuccess: time.Now().Format(time.RFC3339)}); err != nil {
 		w.App.Logger.Warn("运行状态写入失败 err=%v", err)
 	}
-	if err := w.App.ApplyWebPlan(WebApplyPlan{
-		ServiceEnabled:   ServiceEnabled(cfg),
-		Restart:          true,
-		SelectorSwitches: DesiredSelectorSwitches(cfg),
-	}); err != nil {
+	if err := w.queueCurrentConfig(); err != nil {
 		writeJSON(rw, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -4237,22 +4250,15 @@ func (w *WebServer) handleImport(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 	w.Mutex.Lock()
-	defer w.Mutex.Unlock()
 	result, err := w.App.ImportNodeGroup(body)
+	w.Mutex.Unlock()
 	if err != nil {
 		writeJSON(rw, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	cfg, err := w.App.LoadConfig()
-	if err == nil {
-		if err := w.App.ApplyWebPlan(WebApplyPlan{
-			ServiceEnabled:   ServiceEnabled(cfg),
-			Restart:          true,
-			SelectorSwitches: DesiredSelectorSwitches(cfg),
-		}); err != nil {
-			writeJSON(rw, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
+	if err := w.queueCurrentConfig(); err != nil {
+		writeJSON(rw, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
 	}
 	state, err := w.App.BuildWebState()
 	if err != nil {
@@ -4437,6 +4443,11 @@ func (a *App) BuildWebHealth(cfg Config) WebHealthResponse {
 
 // BuildWebState 构造前端首屏完整数据。
 func (a *App) BuildWebState() (WebStateResponse, error) {
+	return a.buildWebState(true)
+}
+
+// buildWebState 可跳过运行时 RPC。示例：保存回执 -> 仅从配置和缓存组装面板数据。
+func (a *App) buildWebState(includeRuntime bool) (WebStateResponse, error) {
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return WebStateResponse{}, err
@@ -4501,7 +4512,7 @@ func (a *App) BuildWebState() (WebStateResponse, error) {
 		imports = append(imports, group)
 	}
 	SortWebBackends(staticNodes)
-	dynamicGroups := a.BuildWebDynamicGroups(cfg)
+	dynamicGroups := a.buildWebDynamicGroups(cfg, includeRuntime)
 	forceProxy, _ := os.ReadFile(a.ForceProxyPath)
 	forceDirect, _ := os.ReadFile(a.ForceDirectPath)
 	singBoxConfig, err := a.GenerateSingBoxConfigText(cfg)
@@ -4538,10 +4549,10 @@ func (a *App) BuildWebState() (WebStateResponse, error) {
 	}, nil
 }
 
-// BuildWebDynamicGroups 构造动态组 Web 状态。
-func (a *App) BuildWebDynamicGroups(cfg Config) []WebDynamicGroup {
+// buildWebDynamicGroups 构造动态组状态。示例：includeRuntime=false -> 跳过 Clash 查询。
+func (a *App) buildWebDynamicGroups(cfg Config, includeRuntime bool) []WebDynamicGroup {
 	groups := make([]WebDynamicGroup, 0, len(cfg.Backend.Groups))
-	memberTags, _ := a.ResolveMemberTagMap(&cfg)
+	memberTags, _ := a.resolveMemberTagMap(&cfg, true)
 	memberRefsByTag := make(map[string]string, len(memberTags))
 	for ref, tag := range memberTags {
 		memberRefsByTag[tag] = ref
@@ -4549,7 +4560,10 @@ func (a *App) BuildWebDynamicGroups(cfg Config) []WebDynamicGroup {
 	for _, group := range cfg.Backend.Groups {
 		status := a.GroupRuntime.Status(group.Key)
 		groupTag := RuntimeBackendTag("group", group.Key)
-		currentTag, _ := a.ClashSelectorNow(groupTag)
+		currentTag := status.CurrentTag
+		if includeRuntime {
+			currentTag, _ = a.ClashSelectorNow(groupTag)
+		}
 		results := status.Results
 		if results == nil {
 			results = map[string][]GroupProbeRecord{}
@@ -4684,7 +4698,7 @@ func normalizeInboundMode(value string, fallback string) (string, error) {
 // normalizeTunRouteExcludeAddress 校验 TUN 捕获排除地址。
 func normalizeTunRouteExcludeAddress(values []string, fallback []string) ([]string, error) {
 	if values == nil {
-		return append([]string(nil), fallback...), nil
+		values = fallback
 	}
 	result := make([]string, 0, len(values))
 	seen := map[string]bool{}
@@ -4706,13 +4720,13 @@ func normalizeTunRouteExcludeAddress(values []string, fallback []string) ([]stri
 	return result, nil
 }
 
-// normalizeTunRouteExcludeItem 校验单个 TUN 捕获排除项。
+// normalizeTunRouteExcludeItem 将单个 TUN 排除项转为 CIDR。示例：192.0.2.1 -> 192.0.2.1/32。
 func normalizeTunRouteExcludeItem(value string) (string, error) {
 	if prefix, err := netip.ParsePrefix(value); err == nil {
 		return prefix.String(), nil
 	}
-	if addr, err := netip.ParseAddr(value); err == nil {
-		return addr.String(), nil
+	if addr, err := netip.ParseAddr(value); err == nil && addr.Zone() == "" {
+		return netip.PrefixFrom(addr, addr.BitLen()).String(), nil
 	}
 	return "", fmt.Errorf("TUN 排除地址只支持 IP 或 CIDR: %s", value)
 }
@@ -4816,6 +4830,8 @@ func (a *App) ConfigHash() (string, error) {
 
 // SaveWebState 保存 Web 面板提交的策略和规则。
 func (a *App) SaveWebState(req WebSaveRequest) error {
+	a.ConfigMutex.Lock()
+	defer a.ConfigMutex.Unlock()
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return err
@@ -4929,40 +4945,6 @@ func DesiredSelectorSwitches(cfg Config) map[string]string {
 		}
 	}
 	return switches
-}
-
-// ApplyWebPlan 应用 Web 保存计划，能热切时只切 selector。
-func (a *App) ApplyWebPlan(plan WebApplyPlan) error {
-	if !plan.ServiceEnabled {
-		return a.Stop()
-	}
-	if plan.Restart {
-		if err := a.Restart(); err != nil {
-			return err
-		}
-		running, err := hasSingBoxProcess()
-		if err != nil {
-			return err
-		}
-		if !running {
-			// 触发条件：Web 保存后没有任何可用 backend。
-			// 不能继续等待 Clash API，因为数据面已被主动停止。
-			// 防止控制面保存成功却因无数据面被误报失败。
-			return nil
-		}
-		if err := a.WaitClashAPIReady(); err != nil {
-			return err
-		}
-	}
-	if err := a.SyncSelectorSwitches(plan.SelectorSwitches); err != nil {
-		return err
-	}
-	if len(plan.SelectorSwitches) > 0 {
-		if err := a.CloseClashConnections(); err != nil && a.Logger != nil {
-			a.Logger.Warn("保存后清理旧连接失败 err=%v", err)
-		}
-	}
-	return nil
 }
 
 // SyncSelectorSwitches 按配置同步 selector，覆盖运行时旧选择。
@@ -5368,6 +5350,8 @@ func domainMatchesSuffix(domain string, suffix string) bool {
 
 // SaveWebSetup 首次保存 Web 账号密码，防止已有配置被未登录覆盖。
 func (a *App) SaveWebSetup(req WebSetupRequest) error {
+	a.ConfigMutex.Lock()
+	defer a.ConfigMutex.Unlock()
 	username := strings.TrimSpace(req.Username)
 	password := strings.TrimSpace(req.Password)
 	if username == "" || password == "" {
@@ -6581,6 +6565,8 @@ func (a *App) handleSingBoxExit(cmd *exec.Cmd, err error) {
 		}
 	}
 	time.Sleep(backoff)
+	a.RuntimeMutex.Lock()
+	defer a.RuntimeMutex.Unlock()
 	cfg, cfgErr := a.LoadConfig()
 	if cfgErr == nil && !ServiceEnabled(cfg) {
 		if a.Logger != nil {
@@ -6710,16 +6696,6 @@ func (a *App) waitSingBoxReady(timeout time.Duration) error {
 		time.Sleep(50 * time.Millisecond)
 	}
 	return errors.New("sing-box 启动后进程未在 500 毫秒内出现")
-}
-
-// WaitClashAPIReady 等到 sing-box 北向 Clash API 可用。
-func (a *App) WaitClashAPIReady() error {
-	for {
-		if clashAPIReady() {
-			return nil
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
 }
 
 // clashAPIReady 判断本地 Clash API 是否已经监听。
@@ -7082,6 +7058,13 @@ func findImportedGroupIndex(groups []ImportedNodeGroup, key string) int {
 
 // BuildSingBoxConfig 构造 sing-box JSON 对象。
 func (a *App) BuildSingBoxConfig(cfg Config, backends []ProxyBackend, directRules []LocalRule, proxyRules []LocalRule, dynamicRules []DynamicOutboundRule) (map[string]any, error) {
+	if cfg.Inbound.Mode != "mixed" {
+		exclude, err := normalizeTunRouteExcludeAddress(cfg.Inbound.Tun.RouteExcludeAddress, nil)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Inbound.Tun.RouteExcludeAddress = exclude
+	}
 	if len(backends) == 0 {
 		return nil, ErrNoAvailableBackend
 	}
@@ -8027,6 +8010,8 @@ func FetchSubscription(client *http.Client, sub Subscription) ([]ProxyBackend, i
 
 // ImportNodeGroup 保存一次手动导入，key 相同会替换配置和缓存。
 func (a *App) ImportNodeGroup(req WebImportRequest) (WebImportResponse, error) {
+	a.ConfigMutex.Lock()
+	defer a.ConfigMutex.Unlock()
 	key := SanitizeTag(firstNonEmpty(req.Key, req.Name))
 	if key == "" {
 		return WebImportResponse{}, errors.New("导入分组 key 不能为空")
@@ -9047,28 +9032,53 @@ func (a *App) ensureLogger(cfg LogConfig) {
 	}
 }
 
-// configureHTTPClient 根据更新配置刷新下载客户端。
-func (a *App) configureHTTPClient(cfg UpdateConfig, useProxy bool) {
+// updateGeoFiles 补齐或刷新规则集缓存。示例：missingOnly=true -> 跳过已有文件。
+func (a *App) updateGeoFiles(cfg UpdateConfig, missingOnly bool) error {
 	proxy := ""
-	if useProxy {
+	if cfg.GeoFilesUseProxy {
 		proxy = cfg.Proxy
 	}
-	a.HTTPClient = NewHTTPClient(defaultTimeout, proxy, cfg.DNS)
+	client := NewHTTPClient(defaultTimeout, proxy, cfg.DNS)
+	defer client.CloseIdleConnections()
+	a.Logger.Info("开始更新 geofiles")
+	if err := os.MkdirAll(a.GeoDir, 0755); err != nil {
+		return err
+	}
+	changed := 0
+	for _, kind := range []string{"geoip", "geosite"} {
+		names := geoIPNames
+		if kind == "geosite" {
+			names = geoSiteNames
+		}
+		for _, name := range names {
+			ok, err := a.downloadGeo(client, kind, name, missingOnly)
+			if err != nil {
+				if missingOnly {
+					return err
+				}
+				a.Logger.Warn("%s 更新失败 name=%s err=%v", kind, name, err)
+			}
+			if ok {
+				changed++
+			}
+		}
+	}
+	a.Logger.Info("geofiles 更新完成 changed=%d total=%d", changed, len(geoIPNames)+len(geoSiteNames))
+	return nil
 }
 
-// configureSubscriptionHTTPClient 统一配置自动和手动订阅更新的明确代理语义。
+// subscriptionHTTPClient 为一次订阅下载选择独立客户端。
 // 示例：显式代理为空且 mixed 已启用 -> 使用本机 mixed 入口。
-func (a *App) configureSubscriptionHTTPClient(cfg Config, useProxy bool) error {
+func subscriptionHTTPClient(cfg Config, useProxy bool) (*http.Client, error) {
 	proxy := ""
 	if useProxy {
 		nextProxy, err := subscriptionProxy(cfg)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		proxy = nextProxy
 	}
-	a.HTTPClient = NewHTTPClientNoEnvProxy(defaultTimeout, proxy, cfg.Update.DNS)
-	return nil
+	return NewHTTPClientNoEnvProxy(defaultTimeout, proxy, cfg.Update.DNS), nil
 }
 
 // subscriptionProxy 返回订阅更新应使用的代理入口。
@@ -9118,14 +9128,6 @@ func mixedProxyHost(listen string) string {
 		return "127.0.0.1"
 	}
 	return strings.Trim(listen, "[]")
-}
-
-// client 返回可复用 HTTP 客户端，适用于订阅和 geofile 周期更新。
-func (a *App) client() *http.Client {
-	if a.HTTPClient == nil {
-		a.HTTPClient = NewHTTPClient(defaultTimeout, "", defaultUpdateDNS)
-	}
-	return a.HTTPClient
 }
 
 // NewHTTPClient 创建带连接复用的 HTTP 客户端。
@@ -9215,7 +9217,7 @@ func NewHTTPClientWithProxy(timeout time.Duration, dnsServer string, proxy func(
 }
 
 // downloadGeo 下载一个 geofile，missingOnly 为 true 时存在则跳过。
-func (a *App) downloadGeo(kind string, name string, missingOnly bool) (bool, error) {
+func (a *App) downloadGeo(client *http.Client, kind string, name string, missingOnly bool) (bool, error) {
 	tag := kind + "-" + name
 	path := filepath.Join(a.GeoDir, tag+".srs")
 	if missingOnly {
@@ -9226,7 +9228,7 @@ func (a *App) downloadGeo(kind string, name string, missingOnly bool) (bool, err
 	url := fmt.Sprintf("https://raw.githubusercontent.com/2dust/sing-box-rules/rule-set-%s/%s.srs", kind, tag)
 	var lastErr error
 	for attempt := 1; attempt <= defaultDownloadRetries; attempt++ {
-		data, err := a.downloadBytes(url)
+		data, err := downloadBytes(client, url)
 		if err != nil {
 			lastErr = err
 			a.Logger.Warn("geofile 下载失败 tag=%s attempt=%d err=%v", tag, attempt, err)
@@ -9243,13 +9245,13 @@ func (a *App) downloadGeo(kind string, name string, missingOnly bool) (bool, err
 }
 
 // downloadBytes 下载单个文件到内存，适用于先比较后写盘的缓存更新。
-func (a *App) downloadBytes(url string) ([]byte, error) {
+func downloadBytes(client *http.Client, url string) ([]byte, error) {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", "sboxctl/0.1")
-	resp, err := a.client().Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}

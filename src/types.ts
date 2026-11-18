@@ -348,6 +348,18 @@ export interface HealthState {
   version: string
 }
 
+/** Web 后台应用状态。示例：保存成功且等待重启 -> pending。 */
+export interface ConfigApplyStatus {
+  /** 进程内的保存版本。 */
+  revision: number
+  /** 当前应用阶段，空值表示暂无保存记录。 */
+  state: '' | 'pending' | 'applying' | 'applied' | 'failed'
+  /** 应用失败的原因。 */
+  error?: string
+  /** 查询时的数据面进程状态。 */
+  sing_box_status?: string
+}
+
 /** 主状态适用于单次加载整个首屏。 */
 export interface PanelState {
   /** 轻量健康状态。 */

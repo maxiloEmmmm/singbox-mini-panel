@@ -611,7 +611,7 @@ func TestApplyWebInboundConfig(t *testing.T) {
 	if cfg.Inbound.Mode != "mixed" || cfg.Inbound.Mixed.Listen != "127.0.0.1" || cfg.Inbound.Mixed.Port != 2080 {
 		t.Fatalf("mixed 监听保存错误: %+v", cfg.Inbound)
 	}
-	wantExclude := []string{"10.10.0.0/16", "192.0.2.10"}
+	wantExclude := []string{"10.10.0.0/16", "192.0.2.10/32"}
 	if !reflect.DeepEqual(cfg.Inbound.Tun.RouteExcludeAddress, wantExclude) {
 		t.Fatalf("TUN 排除地址保存错误: %#v", cfg.Inbound.Tun.RouteExcludeAddress)
 	}

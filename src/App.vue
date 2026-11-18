@@ -31,6 +31,7 @@ import {
 } from './panel-state'
 import type {
   BackendNode,
+  ConfigApplyStatus,
   ConnectionRow,
   ConnectionsResponse,
   DynamicGroup,
@@ -55,6 +56,8 @@ import type {
 
 const token = ref(localStorage.getItem('sboxctl_token') || '')
 const health = ref<HealthState | null>(null)
+const applyStatus = ref<ConfigApplyStatus | null>(null)
+let applyStatusLoading = false
 const panel = ref<PanelState | null>(null)
 const username = ref('')
 const password = ref('')
@@ -1413,6 +1416,25 @@ async function fetchState() {
   applyPanelState(await response.json())
 }
 
+// fetchApplyStatus 更新应用提示。示例：failed -> 展示失败原因，保留表单草稿。
+async function fetchApplyStatus() {
+  const sessionToken = token.value
+  if (!sessionToken || applyStatusLoading) return
+  applyStatusLoading = true
+  try {
+    const response = await fetch('/api/apply', { cache: 'no-store', headers: authHeaders(sessionToken) })
+    if (!response.ok) return
+    const status: ConfigApplyStatus = await response.json()
+    if (token.value !== sessionToken) return
+    applyStatus.value = status
+    if (health.value && status.sing_box_status) health.value.sing_box_status = status.sing_box_status
+  } catch {
+    // 短暂断线期间保留最近一次状态，下次轮询会重新读取。
+  } finally {
+    applyStatusLoading = false
+  }
+}
+
 // 适用场景：刷新当前连接流水，供 Web 自动轮询。
 async function fetchConnections() {
   if (!token.value || connectionsLoading.value) {
@@ -1638,6 +1660,7 @@ function logout() {
   token.value = ''
   localStorage.removeItem('sboxctl_token')
   panel.value = null
+  applyStatus.value = null
 }
 
 // 适用场景：选择当前激活出口。
@@ -1796,7 +1819,6 @@ async function saveAll(confirmOverwrite: boolean | Event = false) {
   }
   const overwrite = confirmOverwrite === true
   saving.value = true
-  probing.value = true
   pageError.value = ''
   try {
     const response = await fetch('/api/save', {
@@ -1889,6 +1911,7 @@ async function saveAll(confirmOverwrite: boolean | Event = false) {
       throw new Error(await readError(response))
     }
     applyPanelState(await response.json())
+    void fetchApplyStatus()
   } catch (error) {
     pageError.value = error instanceof Error ? error.message : String(error)
   } finally {
@@ -2071,6 +2094,7 @@ const uptimeTimer = window.setInterval(() => {
 }, 1000)
 
 const connectionsTimer = window.setInterval(() => {
+  void fetchApplyStatus()
   void fetchConnections()
   void fetchTrafficDaily()
 }, 2000)
@@ -2162,6 +2186,9 @@ onUnmounted(() => {
         <a-tag :color="isServiceRunning ? 'green' : 'red'">
           sing-box {{ health?.sing_box_status }}
         </a-tag>
+        <a-tag v-if="applyStatus?.state === 'pending'" color="gold">已保存，待应用</a-tag>
+        <a-tag v-else-if="applyStatus?.state === 'applying'" color="blue">正在应用配置</a-tag>
+        <a-tag v-else-if="applyStatus?.state === 'applied'" color="green">配置已生效</a-tag>
         <a-tag color="default">运行 {{ uptimeText }}</a-tag>
         <a-tag color="default">版本 {{ versionText }}</a-tag>
         <a-tag color="blue">更新 {{ lastUpdateText }}</a-tag>
@@ -2223,6 +2250,14 @@ onUnmounted(() => {
       </template>
     </a-modal>
 
+    <a-alert
+      v-if="applyStatus?.state === 'failed'"
+      class="page-alert"
+      :message="applyStatus.revision ? '配置已保存，应用失败' : '数据面启动失败'"
+      :description="applyStatus.error"
+      type="error"
+      show-icon
+    />
     <a-alert
       v-if="pageError"
       class="page-alert"
