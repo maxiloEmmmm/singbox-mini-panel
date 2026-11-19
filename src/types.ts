@@ -54,6 +54,14 @@ export interface BackendNode {
   detour?: string
   /** CF 动态 daemon 发现使用的完整 KV key。 */
   kv_key?: string
+  /** UU 对端设备标识。 */
+  uu_device_id?: string
+  /** 连接使用的全局 UU 账号。 */
+  uu_account?: string
+  /** UU 认证状态。 */
+  uu_auth?: string
+  /** UU 转发状态。 */
+  uu_connection?: string
   /** 本次 CF WSS 握手命中的三位 POP 代码。 */
   cf_colo?: string
   /** CF 单 WSS 载体当前是否连接。 */
@@ -271,6 +279,23 @@ export interface TrafficTargetRow extends TrafficCounter {
 }
 
 /** 入口配置适用于 Web 修改 mixed 监听。 */
+export interface UUAccountOption {
+  /** 连接账号配置 key。 */
+  key: string
+  /** 连接账号展示名称。 */
+  name: string
+}
+
+/** UUConfig 保存认证中心的公开配置。 */
+export interface UUConfig {
+  /** host_enabled 控制是否接收其他设备的 UU 连接。 */
+  host_enabled: boolean
+  /** host_account 为空时使用接收端独立认证。 */
+  host_account: string
+  /** accounts 保存额外的连接账号。 */
+  accounts: UUAccountOption[]
+}
+
 export interface InboundSettings {
   /** 入口模式。 */
   inbound_mode: string
@@ -380,6 +405,8 @@ export interface PanelState {
   hosts_override: boolean
   /** 入口配置。 */
   inbound: InboundSettings
+  /** 全局 UU 认证中心配置。 */
+  uu?: UUConfig
   /** 强制代理规则文本。 */
   force_proxy: string
   /** 强制直连规则文本。 */
@@ -410,6 +437,10 @@ export interface StaticForm {
   port: number
   /** CF 动态 daemon 发现使用的完整 KV key。 */
   kv_key: string
+  /** UU 对端设备标识。 */
+  uu_device_id: string
+  /** 连接使用的全局 UU 账号。 */
+  uu_account: string
   /** 协议密码。 */
   password: string
   /** SOCKS5/HTTP 用户名。 */

@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { authHeaders, readError } from './api'
 import { formatBytes, formatDurationSince, formatTime } from './format'
 import { helpSections } from './help'
+import { useUU, uuAuthLabel, uuConnectionLabel } from './use-uu'
 import {
   arrayOrEmpty,
   cloneDynamicGroups,
@@ -52,6 +53,7 @@ import type {
   SubscriptionGroup,
   TrafficDailyResponse,
   TrafficTargetRow,
+  UUConfig,
 } from './types'
 
 const token = ref(localStorage.getItem('sboxctl_token') || '')
@@ -109,6 +111,7 @@ const loginError = ref('')
 const setupError = ref('')
 const pageError = ref('')
 const activeNodeTab = ref('static')
+const activeRuleTab = ref('inbound')
 const nowTick = ref(Date.now())
 const activeMemberSourceKey = ref('static')
 const activeOutboundSourceKey = ref('static')
@@ -134,6 +137,76 @@ const probingSeriesTag = ref('')
 const staticModalOpen = ref(false)
 const staticEditingKey = ref('')
 const staticForm = ref<StaticForm>(emptyStaticForm())
+const uu = ref<UUConfig>({ host_enabled: false, host_account: '', accounts: [] })
+const savedUU = ref<UUConfig>({ host_enabled: false, host_account: '', accounts: [] })
+const uuAccountName = ref('')
+const uuAccountKey = ref('default')
+const uuAccounts = computed(() => [{ key: 'default', name: '默认连接账号' }, ...uu.value.accounts])
+const uuAccountOptions = computed(() => uuAccounts.value.map((profile) => ({ value: profile.key, label: profile.name })))
+const uuHostOptions = computed(() => [{ value: '', label: '独立扫码' }, ...uuAccountOptions.value])
+const uuCenterReady = computed(() => savedUU.value.host_enabled || !!savedUU.value.host_account ||
+  savedUU.value.accounts.length > 0 || savedStaticNodes.value.some((node) => node.protocol === 'uu'))
+const uuTabTag = computed(() => activeRuleTab.value === 'uu' && uuCenterReady.value ? 'uu-host' : '')
+const uuHostTag = computed(() => savedUU.value.host_account === uu.value.host_account ? uuTabTag.value : '')
+const uuAccountTag = computed(() => uuAccountKey.value === 'default' || savedUU.value.accounts.some((item) => item.key === uuAccountKey.value)
+  ? uuTabTag.value
+  : '')
+const uuNodeAccount = computed(() => staticForm.value.uu_account)
+const uuNodeTag = computed(() => {
+  if (!staticModalOpen.value || staticForm.value.protocol !== 'uu' || !uuNodeAccount.value || !uuCenterReady.value) return ''
+  return uuNodeAccount.value === 'default' || savedUU.value.accounts.some((profile) => profile.key === uuNodeAccount.value)
+    ? 'uu-host'
+    : ''
+})
+const host = useUU(uuHostTag, token, computed(() => ''))
+const controller = useUU(uuAccountTag, token, uuAccountKey)
+const nodeUU = useUU(uuNodeTag, token, uuNodeAccount, true)
+const uuHostStatus = host.status
+const uuHostError = host.error
+const uuHostStarting = host.starting
+const uuControllerStatus = controller.status
+const uuControllerError = controller.error
+const uuControllerStarting = controller.starting
+const uuNodeStatus = nodeUU.status
+const uuNodeError = nodeUU.error
+const uuDeviceOptions = computed(() => {
+  const options = nodeUU.devices.value.map((device) => ({ value: device.device_id, label: device.name }))
+  const current = staticForm.value.uu_device_id
+  if (current && !options.some((item) => item.value === current)) options.push({ value: current, label: current })
+  return options
+})
+
+/** addUUAccount adds a connection profile, e.g. 家里 -> a unique stable key. */
+function addUUAccount() {
+  const name = uuAccountName.value.trim()
+  if (!name) return
+  const base = sanitizeLocalKey(name).replace(/[^a-z0-9_-]/g, '-').slice(0, 52) || 'account'
+  let key = base
+  let counter = 2
+  while (key === 'host' || uuAccounts.value.some((item) => item.key === key)) key = `${base}-${counter++}`
+  uu.value.accounts = [...uu.value.accounts, { key, name }]
+  uuAccountKey.value = key
+  uuAccountName.value = ''
+}
+
+/** selectUUNodeAccount drops the previous account's device, e.g. A -> B clears the selection. */
+function selectUUNodeAccount(value: string | number) {
+  staticForm.value.uu_account = String(value)
+  staticForm.value.uu_device_id = ''
+}
+
+/** uuHostAvailability formats the receiver's independent cloud state. */
+function uuHostAvailability(state?: string) {
+  switch (state) {
+    case 'online': return '已上线'
+    case 'disabled': return '接收已关闭'
+    case 'waiting_auth': return '等待认证'
+    case 'connecting': return '正在上线'
+    case 'error': return '上线失败'
+    default: return '未就绪'
+  }
+}
+
 const subscriptionModalOpen = ref(false)
 const subscriptionEditingKey = ref('')
 const subscriptionForm = ref<SubscriptionForm>(emptySubscriptionForm())
@@ -395,6 +468,7 @@ const hasChanges = computed(() => {
     tunRouteExcludeAddressSetText.value !== savedTunRouteExcludeAddressSetText.value ||
     mixedListen.value !== savedMixedListen.value ||
     Number(mixedPort.value) !== Number(savedMixedPort.value) ||
+    JSON.stringify(uu.value) !== JSON.stringify(savedUU.value) ||
     serviceEnabled.value !== savedServiceEnabled.value ||
     adsBlock.value !== savedAdsBlock.value ||
     hostsOverride.value !== savedHostsOverride.value ||
@@ -416,6 +490,13 @@ function applyPanelState(nextPanel: PanelState) {
   nextPanel = panel.value
   health.value = nextPanel.health
   configHash.value = nextPanel.config_hash
+  const uuConfig = {
+    host_enabled: nextPanel.uu?.host_enabled === true,
+    host_account: nextPanel.uu?.host_account || '',
+    accounts: arrayOrEmpty(nextPanel.uu?.accounts).map((profile) => ({ ...profile })),
+  }
+  uu.value = uuConfig
+  savedUU.value = { ...uuConfig, accounts: uuConfig.accounts.map((profile) => ({ ...profile })) }
   selectedTag.value = nextPanel.health.active_outbound
   staticNodes.value = cloneStaticNodes(nextPanel.static)
   subscriptions.value = cloneSubscriptions(nextPanel.subscriptions)
@@ -508,6 +589,9 @@ async function acknowledgePrimaryMissingWarning() {
 // 适用场景：切换静态节点协议时补齐该协议的常见默认项。
 function updateStaticProtocol(protocol: string) {
   const nextProtocol = normalizeStaticProtocol(protocol)
+  if (nextProtocol === 'uu' && (!Number(staticForm.value.port) || Number(staticForm.value.port) === 443)) {
+    staticForm.value.port = 1080
+  }
   staticForm.value.protocol = nextProtocol
   if (nextProtocol === 'trojan' || nextProtocol === 'anytls' || nextProtocol === 'socks' || nextProtocol === 'http') {
     staticForm.value.port = Number(staticForm.value.port) || 443
@@ -579,8 +663,17 @@ function saveStaticDraft() {
     pageError.value = `静态节点 key 重复: ${key}`
     return
   }
-  if (protocol !== 'cf' && !item.server.trim()) {
+  if (protocol !== 'cf' && protocol !== 'uu' && !item.server.trim()) {
     pageError.value = '静态节点 server 必填'
+    return
+  }
+  const port = Number(item.port)
+  if (protocol === 'uu' && (!Number.isInteger(port) || port < 1 || port > 65535)) {
+    pageError.value = 'UU 远端端口必须是 1 到 65535 的整数'
+    return
+  }
+  if (protocol === 'uu' && !item.uu_account) {
+    pageError.value = '请选择 UU 连接账号'
     return
   }
   if (protocol === 'cf' && !item.kv_key.trim()) {
@@ -613,9 +706,11 @@ function saveStaticDraft() {
     tag: `static-${key}`,
     name: item.name.trim() || key,
     protocol,
-    server: protocol === 'cf' ? '' : item.server.trim(),
+    server: protocol === 'cf' || protocol === 'uu' ? '' : item.server.trim(),
     port: protocol === 'cf' ? 0 : Number(item.port) || 443,
     kv_key: protocol === 'cf' ? item.kv_key.trim() : '',
+    uu_device_id: protocol === 'uu' ? item.uu_device_id : '',
+    uu_account: protocol === 'uu' ? item.uu_account : '',
     source: 'static',
     username: protocol === 'socks' || protocol === 'http' ? item.username.trim() : '',
     password: protocol === 'hy2' || protocol === 'ss' || protocol === 'trojan' || protocol === 'anytls' || protocol === 'socks' || protocol === 'http' ? item.password.trim() : '',
@@ -1673,6 +1768,9 @@ function nodeSubtitle(node: BackendNode) {
   if (node.protocol === 'cf') {
     return [node.kv_key || '-', node.cf_colo || '未连接'].join(' · ')
   }
+  if (node.protocol === 'uu') {
+    return [`127.0.0.1:${node.port}`, uuAuthLabel(node.uu_auth), uuConnectionLabel(node.uu_connection)].join(' · ')
+  }
   return `${node.server}:${node.port}`
 }
 
@@ -1827,6 +1925,7 @@ async function saveAll(confirmOverwrite: boolean | Event = false) {
       body: JSON.stringify({
         service_enabled: serviceEnabled.value,
         active_outbound: selectedTag.value,
+        uu: uu.value,
         config_hash: configHash.value,
         confirm_overwrite: overwrite,
         static: staticNodes.value.map((node) => ({
@@ -1836,6 +1935,8 @@ async function saveAll(confirmOverwrite: boolean | Event = false) {
           server: node.server,
           port: Number(node.port),
           kv_key: node.kv_key || '',
+          uu_device_id: node.uu_device_id || '',
+          uu_account: node.uu_account || '',
           password: node.password || '',
           username: node.username || '',
           detour: node.detour || '',
@@ -2803,6 +2904,7 @@ onUnmounted(() => {
                   <a-select-option value="socks">SOCKS5</a-select-option>
                   <a-select-option value="http">HTTP</a-select-option>
                   <a-select-option value="cf">CF</a-select-option>
+                  <a-select-option value="uu">UU</a-select-option>
                 </a-select>
               </label>
               <label class="field-row">
@@ -2813,11 +2915,11 @@ onUnmounted(() => {
                 <span>名称</span>
                 <a-input v-model:value="staticForm.name" placeholder="日本JP-HY2" />
               </label>
-              <label v-if="staticForm.protocol !== 'cf'" class="field-row">
+              <label v-if="staticForm.protocol !== 'cf' && staticForm.protocol !== 'uu'" class="field-row">
                 <span>server</span>
                 <a-input v-model:value="staticForm.server" placeholder="example.com" />
               </label>
-              <label v-if="staticForm.protocol !== 'cf'" class="field-row">
+              <label v-if="staticForm.protocol !== 'cf' && staticForm.protocol !== 'uu'" class="field-row">
                 <span>port</span>
                 <a-input v-model:value="staticForm.port" type="number" />
               </label>
@@ -2825,6 +2927,37 @@ onUnmounted(() => {
                 <span>kv-key</span>
                 <a-input v-model:value="staticForm.kv_key" placeholder="cfp/demo" />
               </label>
+              <template v-if="staticForm.protocol === 'uu'">
+                <label class="field-row">
+                  <span>远端入站端口</span>
+                  <a-input v-model:value="staticForm.port" type="number" min="1" max="65535" />
+                </label>
+                <label class="field-row">
+                  <span>连接账号</span>
+                  <a-select
+                    :value="staticForm.uu_account || undefined"
+                    :options="uuAccountOptions"
+                    placeholder="选择连接账号"
+                    @change="selectUUNodeAccount"
+                  />
+                </label>
+                <label v-if="staticForm.uu_account" class="field-row">
+                  <span>对端设备</span>
+                  <a-select
+                    v-model:value="staticForm.uu_device_id"
+                    :options="uuDeviceOptions"
+                    :disabled="uuNodeStatus?.auth !== 'authenticated'"
+                    show-search
+                    option-filter-prop="label"
+                  />
+                </label>
+                <a-alert
+                  v-if="staticForm.uu_account && uuNodeStatus?.auth !== 'authenticated'"
+                  :message="uuNodeError || '在右侧 UU Tab 保存并认证该账号后可选择设备'"
+                  type="info"
+                  show-icon
+                />
+              </template>
               <div class="field-row">
                 <span>detour</span>
                 <div class="outbound-target-row">
@@ -3052,7 +3185,7 @@ onUnmounted(() => {
       </aside>
 
       <section class="rules-column">
-        <a-tabs class="rule-tabs" size="small">
+        <a-tabs v-model:activeKey="activeRuleTab" class="rule-tabs" size="small">
           <a-tab-pane key="inbound" tab="入口">
             <div class="rule-pane">
               <div class="pane-title">
@@ -3097,6 +3230,61 @@ onUnmounted(() => {
                     :auto-size="{ minRows: 2, maxRows: 6 }"
                   />
                 </label>
+              </div>
+            </div>
+          </a-tab-pane>
+
+          <a-tab-pane key="uu" tab="UU">
+            <div class="rule-pane">
+              <div class="pane-title">
+                <strong>接收端</strong>
+                <span v-if="uu.host_enabled">127.0.0.1:{{ mixedPort }}</span>
+              </div>
+              <div class="form-grid">
+                <label class="field-row">
+                  <span>开启 UU 接收</span>
+                  <a-switch v-model:checked="uu.host_enabled" />
+                </label>
+                <label class="field-row">
+                  <span>接收端认证</span>
+                  <a-select v-model:value="uu.host_account" :options="uuHostOptions" />
+                </label>
+                <div v-if="uuHostTag" class="field-row">
+                  <span>{{ uuAuthLabel(uuHostStatus?.auth) }} · {{ uuHostAvailability(uuHostStatus?.connection) }}</span>
+                  <a-button v-if="!uu.host_account" size="small" :loading="uuHostStarting" @click="host.startLogin">
+                    {{ uuHostStatus?.auth === 'authenticated' ? '重新扫码' : '扫码认证' }}
+                  </a-button>
+                  <img v-if="!uu.host_account && uuHostStatus?.qr" :src="uuHostStatus.qr" alt="UU 接收端登录二维码" width="192" height="192" />
+                  <a-alert v-if="uuHostError || uuHostStatus?.auth_error || uuHostStatus?.connection_error"
+                    :message="uuHostError || uuHostStatus?.auth_error || uuHostStatus?.connection_error" type="warning" show-icon />
+                </div>
+                <div v-else class="field-row">保存并应用后可查看接收状态</div>
+              </div>
+              <div class="pane-title">
+                <strong>连接认证</strong>
+              </div>
+              <div class="form-grid">
+                <label class="field-row">
+                  <span>连接账号</span>
+                  <a-select v-model:value="uuAccountKey" :options="uuAccountOptions" />
+                </label>
+                <div class="field-row">
+                  <span>新增账号</span>
+                  <div class="outbound-target-row">
+                    <a-input v-model:value="uuAccountName" placeholder="账号名称" @pressEnter="addUUAccount" />
+                    <a-button size="small" @click="addUUAccount">添加</a-button>
+                  </div>
+                </div>
+                <div v-if="uuAccountTag" class="field-row">
+                  <span>{{ uuAuthLabel(uuControllerStatus?.auth) }}</span>
+                  <a-button size="small" :loading="uuControllerStarting" @click="controller.startLogin">
+                    {{ uuControllerStatus?.auth === 'authenticated' ? '重新扫码' : '扫码认证' }}
+                  </a-button>
+                  <img v-if="uuControllerStatus?.qr" :src="uuControllerStatus.qr" alt="UU 连接账号登录二维码" width="192" height="192" />
+                  <a-alert v-if="uuControllerError || uuControllerStatus?.auth_error"
+                    :message="uuControllerError || uuControllerStatus?.auth_error" type="warning" show-icon />
+                </div>
+                <div v-else class="field-row">保存并应用后可扫码认证</div>
               </div>
             </div>
           </a-tab-pane>

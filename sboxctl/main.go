@@ -248,6 +248,8 @@ type Config struct {
 	Log LogConfig `yaml:"log"`
 	// Inbound 控制入口模式，默认使用 TUN 全局透明代理。
 	Inbound InboundConfig `yaml:"inbound"`
+	// UU 保存设备级接收选项和连接账号。
+	UU UUConfig `yaml:"uu,omitempty"`
 	// Backend 保存静态代理节点和订阅来源。
 	Backend BackendConfig `yaml:"backend"`
 	// Update 控制 geofiles 和订阅更新行为。
@@ -383,6 +385,8 @@ const (
 	staticProtocolHTTP = "http"
 	// staticProtocolCF 表示静态节点使用内置 CF mux 出站。
 	staticProtocolCF = "cf"
+	// staticProtocolUU 表示内置 UU TCP 端口映射出站。
+	staticProtocolUU = "uu"
 )
 
 // PolicyConfig 表示路由最终策略，适用于多个代理后端场景。
@@ -667,7 +671,7 @@ type HTTPBackend struct {
 
 // StaticBackend 表示 Web 可编辑的扁平静态节点。
 type StaticBackend struct {
-	// Protocol 是节点协议，支持 hy2、vmess、ss、trojan、anytls、socks、http 和 cf。
+	// Protocol 是节点协议，支持 hy2、vmess、ss、trojan、anytls、socks、http、cf 和 uu。
 	Protocol string `yaml:"protocol,omitempty" json:"protocol"`
 	// Key 是静态列表内唯一机器标识。
 	Key string `yaml:"key,omitempty" json:"key"`
@@ -681,6 +685,10 @@ type StaticBackend struct {
 	Port int `yaml:"port,omitempty" json:"port"`
 	// KVKey 是 CF 出站查询动态 daemon 地址使用的完整 KV key。
 	KVKey string `yaml:"kv_key,omitempty" json:"kv_key"`
+	// UUDeviceID 是扫码登录后选择的对端设备标识。
+	UUDeviceID string `yaml:"uu_device_id,omitempty" json:"uu_device_id,omitempty"`
+	// UUAccount 选择一个全局连接账号，空值沿用旧默认账号。
+	UUAccount string `yaml:"uu_account,omitempty" json:"uu_account,omitempty"`
 	// Password 是 HY2、Shadowsocks、Trojan、AnyTLS、SOCKS 或 HTTP 密码。
 	Password string `yaml:"password,omitempty" json:"password"`
 	// Username 是 SOCKS5 或 HTTP 代理认证用户名。
@@ -1159,6 +1167,15 @@ func (b *StaticBackend) SetBackendSource(source string) {
 // BuildOutbound 按协议构造静态节点 sing-box outbound。
 func (b *StaticBackend) BuildOutbound() map[string]any {
 	switch b.BackendProtocol() {
+	case staticProtocolUU:
+		options := map[string]any{"type": staticProtocolUU, "tag": b.Tag, "remote_port": b.Port}
+		if b.UUAccount != "" {
+			options["account"] = b.UUAccount
+		}
+		if b.UUDeviceID != "" {
+			options["device_id"] = b.UUDeviceID
+		}
+		return applyStaticDetour(options, b.RuntimeDetour)
 	case staticProtocolCF:
 		return applyStaticDetour(map[string]any{
 			"type":   staticProtocolCF,
@@ -1702,6 +1719,8 @@ type WebStateResponse struct {
 	HostsOverride bool `json:"hosts_override"`
 	// Inbound 保存入口模式和 mixed 监听配置。
 	Inbound WebInboundConfig `json:"inbound"`
+	// UU 返回认证中心的公开配置。
+	UU UUConfig `json:"uu"`
 	// ForceProxy 是强制代理规则文件内容。
 	ForceProxy string `json:"force_proxy"`
 	// ForceDirect 是强制直连规则文件内容。
@@ -1734,6 +1753,14 @@ type WebBackend struct {
 	Port int `json:"port"`
 	// KVKey 是 CF 出站查询动态 daemon 地址使用的完整 KV key。
 	KVKey string `json:"kv_key,omitempty"`
+	// UUDeviceID 是该节点选择的对端设备。
+	UUDeviceID string `json:"uu_device_id,omitempty"`
+	// UUAccount 是节点使用的连接账号。
+	UUAccount string `json:"uu_account,omitempty"`
+	// UUAuth 是当前共享账户的认证状态。
+	UUAuth string `json:"uu_auth,omitempty"`
+	// UUConnection 是该节点端口映射的连接状态。
+	UUConnection string `json:"uu_connection,omitempty"`
 	// CFColo 是本次 CF WSS 握手命中的三位 POP 代码。
 	CFColo string `json:"cf_colo,omitempty"`
 	// CFConnected 表示对应的单 WSS 载体当前仍连接。
@@ -1900,6 +1927,8 @@ type WebSaveRequest struct {
 	DynamicGroups []DynamicGroupConfig `json:"dynamic_groups"`
 	// Inbound 保存入口模式和 mixed 监听配置。
 	Inbound WebInboundConfig `json:"inbound"`
+	// UU 保存全局接收选项和连接账号，旧客户端可省略。
+	UU *UUConfig `json:"uu,omitempty"`
 	// ForceProxy 是强制代理规则文件内容。
 	ForceProxy string `json:"force_proxy"`
 	// ForceDirect 是强制直连规则文件内容。
@@ -4032,6 +4061,7 @@ func (a *App) StartWebServer(cfg Config) (*WebServer, error) {
 	mux.HandleFunc("/api/warnings/primary-missing/ack", web.withAuth(web.handlePrimaryWarningAck))
 	mux.HandleFunc("/api/import", web.withAuth(web.handleImport))
 	mux.HandleFunc("/api/node/probe", web.withAuth(web.handleNodeProbe))
+	mux.HandleFunc("/api/uu/", web.withAuth(web.handleUU))
 	mux.HandleFunc("/api/route/check", web.withAuth(web.handleRouteCheck))
 	mux.HandleFunc("/api/connections", web.withAuth(web.handleConnections))
 	mux.HandleFunc("/api/traffic/daily", web.withAuth(web.handleTrafficDaily))
@@ -4465,6 +4495,7 @@ func (a *App) buildWebState(includeRuntime bool) (WebStateResponse, error) {
 		a.Logger.Warn("读取 CF outbound 运行状态失败 err=%v", statusErr)
 	}
 	ApplyCFOutboundStatuses(staticNodes, cfStatuses)
+	applyUUStatuses(staticNodes)
 	subscriptions := make([]WebSubscription, 0, len(cfg.Backend.Subscription))
 	for _, sub := range cfg.Backend.Subscription {
 		group := WebSubscription{
@@ -4537,6 +4568,7 @@ func (a *App) buildWebState(includeRuntime bool) (WebStateResponse, error) {
 		GeoFiles:      a.BuildWebGeoFiles(),
 		HostsOverride: HostsOverrideEnabled(cfg),
 		Inbound:       WebInboundFromConfig(cfg),
+		UU:            cfg.UU,
 		ForceProxy:    string(forceProxy),
 		ForceDirect:   string(forceDirect),
 		Overrides: append(make([]OverrideRule, 0, len(cfg.Policy.Overrides)),
@@ -4849,9 +4881,6 @@ func (a *App) SaveWebState(req WebSaveRequest) error {
 	if err := ValidateLocalRulesText(req.ForceDirect); err != nil {
 		return fmt.Errorf("强制直连规则错误: %w", err)
 	}
-	if req.ActiveOutbound == "" {
-		return errors.New("必须选择一个 outbound")
-	}
 	oldCfg := cfg
 	cfg.Service.Enabled = boolPtr(req.ServiceEnabled)
 	if err := ApplyWebInboundConfig(&cfg, req.Inbound); err != nil {
@@ -4870,6 +4899,18 @@ func (a *App) SaveWebState(req WebSaveRequest) error {
 		return err
 	}
 	cfg.Backend.Static = staticNodes
+	if req.UU != nil {
+		cfg.UU = *req.UU
+	}
+	if err := normalizeUUConfig(&cfg); err != nil {
+		return err
+	}
+	if req.ActiveOutbound == "" {
+		if !hasUUCenter(cfg) {
+			return errors.New("必须选择一个 outbound")
+		}
+		req.ActiveOutbound = "direct"
+	}
 	cfg.Backend.Subscription = subscriptions
 	cfg.Backend.Imports = imports
 	groups, err := NormalizeDynamicGroupsForSave(req.DynamicGroups, a.AvailableMemberRefs(cfg))
@@ -4888,7 +4929,7 @@ func (a *App) SaveWebState(req WebSaveRequest) error {
 	if err != nil {
 		return err
 	}
-	if !a.WebBackendExists(cfg, req.ActiveOutbound) {
+	if !(req.ActiveOutbound == "direct" && hasUUCenter(cfg)) && !a.WebBackendExists(cfg, req.ActiveOutbound) {
 		return fmt.Errorf("outbound 不存在: %s", req.ActiveOutbound)
 	}
 	cfg.Policy.Default = req.ActiveOutbound
@@ -5981,6 +6022,8 @@ func normalizeStaticProtocol(protocol string) string {
 		return staticProtocolHTTP
 	case staticProtocolCF:
 		return staticProtocolCF
+	case staticProtocolUU:
+		return staticProtocolUU
 	default:
 		return staticProtocolHY2
 	}
@@ -6000,7 +6043,7 @@ func NormalizeStaticBackendsForSave(nodes []StaticBackend) ([]StaticBackend, err
 		if seen[node.Key] {
 			return nil, fmt.Errorf("静态节点 key 重复: %s", node.Key)
 		}
-		if node.Protocol != staticProtocolCF && strings.TrimSpace(node.Server) == "" {
+		if node.Protocol != staticProtocolCF && node.Protocol != staticProtocolUU && strings.TrimSpace(node.Server) == "" {
 			return nil, fmt.Errorf("静态节点 %s server 为空", node.Key)
 		}
 		if node.Protocol != staticProtocolCF && (node.Port <= 0 || node.Port > 65535) {
@@ -6013,10 +6056,19 @@ func NormalizeStaticBackendsForSave(nodes []StaticBackend) ([]StaticBackend, err
 			Detour:   strings.TrimSpace(node.Detour),
 		}
 		if node.Protocol != staticProtocolCF {
-			clean.Server = strings.TrimSpace(node.Server)
 			clean.Port = node.Port
 		}
+		if node.Protocol != staticProtocolCF && node.Protocol != staticProtocolUU {
+			clean.Server = strings.TrimSpace(node.Server)
+		}
 		switch node.Protocol {
+		case staticProtocolUU:
+			id := strings.TrimSpace(node.UUDeviceID)
+			if len(id) > 256 || id == "." || id == ".." || strings.ContainsAny(id, "\x00\r\n") {
+				return nil, fmt.Errorf("静态节点 %s UU 设备 ID 非法", node.Key)
+			}
+			clean.UUDeviceID = id
+			clean.UUAccount = strings.TrimSpace(node.UUAccount)
 		case staticProtocolCF:
 			if strings.TrimSpace(node.KVKey) == "" {
 				return nil, fmt.Errorf("静态节点 %s kv_key 为空", node.Key)
@@ -6173,6 +6225,8 @@ func WebBackendFromBackend(node ProxyBackend, source string) WebBackend {
 	if source == "static" {
 		if staticNode, ok := node.(*StaticBackend); ok {
 			item.KVKey = staticNode.KVKey
+			item.UUDeviceID = staticNode.UUDeviceID
+			item.UUAccount = staticNode.UUAccount
 			item.Username = staticNode.Username
 			item.Password = staticNode.Password
 			item.SNI = staticNode.SNI
@@ -7065,11 +7119,17 @@ func (a *App) BuildSingBoxConfig(cfg Config, backends []ProxyBackend, directRule
 		}
 		cfg.Inbound.Tun.RouteExcludeAddress = exclude
 	}
-	if len(backends) == 0 {
+	uuService, err := buildUUService(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if len(backends) == 0 && uuService == nil {
 		return nil, ErrNoAvailableBackend
 	}
 	defaultOutbound := cfg.Policy.Default
-	if defaultOutbound == "" {
+	if len(backends) == 0 {
+		defaultOutbound = "direct"
+	} else if defaultOutbound == "" {
 		defaultOutbound = backends[0].BackendTag()
 	}
 	routeProxyOutbound := defaultCurrentSelector
@@ -7077,6 +7137,9 @@ func (a *App) BuildSingBoxConfig(cfg Config, backends []ProxyBackend, directRule
 		{"type": "direct", "tag": "direct"},
 	}
 	backendTags := make([]string, 0, len(backends))
+	if defaultOutbound == "direct" {
+		backendTags = append(backendTags, "direct")
+	}
 	for _, b := range backends {
 		outbounds = append(outbounds, b.BuildOutbound())
 		backendTags = append(backendTags, b.BackendTag())
@@ -7184,7 +7247,7 @@ func (a *App) BuildSingBoxConfig(cfg Config, backends []ProxyBackend, directRule
 		"tag":         "fakeip",
 		"inet4_range": "198.18.0.0/15",
 	})
-	return map[string]any{
+	config := map[string]any{
 		"log": map[string]any{
 			"level":     cfg.Log.Level,
 			"output":    filepath.Join(cfg.Log.Dir, "sing-box.log"),
@@ -7217,7 +7280,11 @@ func (a *App) BuildSingBoxConfig(cfg Config, backends []ProxyBackend, directRule
 			},
 			"auto_detect_interface": true,
 		},
-	}, nil
+	}
+	if uuService != nil {
+		config["services"] = []map[string]any{uuService}
+	}
+	return config, nil
 }
 
 // HostsOverrideEnabled 返回 hosts DNS 开关，旧配置缺失时默认开启。
