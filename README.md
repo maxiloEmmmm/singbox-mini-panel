@@ -8,75 +8,27 @@
   <img src="https://img.shields.io/badge/sing--box-1.13.12-8b5cf6?style=flat-square" alt="sing-box 1.13.12" />
 </p>
 
-`sboxctl` 是运行在 OpenWrt 上的 sing-box 控制面：维护一份配置，生成 sing-box JSON，托管数据面进程，并提供内嵌 Web 面板。
+sboxctl 在 OpenWrt 和 Linux 上生成配置、托管 sing-box 并提供 Web 面板。配合定制内核，可通过 CF 或 UU 双向访问远端网段。[singbox-x](https://github.com/maxiloEmmmm/singbox-x)
 
-## 这个项目解决什么
+## 跨网段互联
 
-它主要解决三件事：
+| 出口 | 适用场景 | 对端入口 |
+| --- | --- | --- |
+| **UU** | 扫码后选择已上线的 UU 设备，转发 TCP 和 UDP | singbox-x 内置的 Go 接收端，转给本机 mixed 入站 |
+| **CF Mux** | 通过 Cloudflare Tunnel 访问对端，在一条 WSS 上复用 TCP 和 UDP | 支持 Mux 的 tmp-proxy daemon |
 
-1. **配置归一**：订阅、静态出口、动态组和定向路由最终都由 `/etc/sboxctl/config.yaml` 生成，不手改易被覆盖的 sing-box JSON。
-2. **进程归一**：sboxctl 负责生成、启动、重启和恢复 sing-box，避免配置脚本与服务管理彼此脱节。
-3. **跨网段互联**：配合 `singbox-x` 的 CF Mux outbound，把对端网段作为透明路由目标，并在一条 WSS 上复用 TCP/UDP 流。
+两种出口都能绑定到目标 CIDR。比如 A 将远端的 `198.51.100.0/24` 指向 UU 节点，B 将 A 的 `192.0.2.0/24` 指向反向 UU 节点。需要透明代理时，在各自接入端启用 TUN。
 
-常规节点、订阅、FakeIP、TUN/mixed 和规则管理由 Web 面板提供，这里不重复罗列 sing-box 已有能力。
+### UU 配置
 
-## 运行关系
+1. **接收端**打开右侧「UU」页，启用「开启 UU 接收」，选择已有连接账号或「独立扫码」，再保存并应用。独立登录在保存后扫码。状态显示「已认证 · 已上线」后，其他设备可以选到它。接收端是全局设置，同一台设备只开一次。
+2. **连接端**新增一个 `uu` 静态节点，填写对端 mixed 端口，例如 `1080`，并保存并应用。首次使用时，设备可以稍后再选。
+3. 回到「UU」页选择「默认连接账号」，点「扫码认证」并在手机确认。已有登录可以直接用。只有需要管理多个连接账号时，才添加一个本地别名，比如「公司」，保存并应用后为这个别名扫码。
+4. 编辑静态节点，选择连接账号及其设备，再把目标网段指向这个节点。双向访问时，两边都启用接收并分别配置出站路由。
 
-```text
-LAN / local app
-      │
-   TUN / mixed
-      │
-   sing-box  ◀──── sboxctl ──── config.yaml / Web panel
-      │
-      ├── normal outbound
-      │
-      └── CF Mux outbound ── one WSS ── remote daemon ── target network
-```
+### CF Mux 配置
 
-sboxctl 启动时：
-
-```text
-读取 config.yaml
-→ 更新必要缓存
-→ 生成 /etc/sing-box/config.json
-→ 启动并托管 sing-box
-```
-
-如果 sboxctl 同级目录存在可执行的 `sing-box`，会优先使用它；否则使用 `/usr/bin/sing-box`。
-
-## CF Mux
-
-CF Mux 是本项目区别于普通 sing-box 面板的部分。
-
-sing-box 把 TUN 捕获到的原始目标直接交给自定义 outbound：
-
-```text
-192.0.2.154:22
-→ static-cf
-→ OPEN(stream_id=1, 192.0.2.154:22)
-→ shared WSS
-→ daemon 连接真实目标
-```
-
-一条 WSS 可以同时承载多条 TCP 和 UDP 流：
-
-```text
-stream 1       → TCP target A
-stream 3       → TCP target B
-association 5  → UDP target C
-```
-
-实现包含：
-
-- stream ID 隔离多条逻辑流。
-- 单流窗口和总窗口，窗口耗尽时停止读取相邻 TCP。
-- 按字节公平调度，避免大流长期压制交互流。
-- UDP 数据报边界和 association 回包映射。
-- 显式 `detour` 控制 WSS 的物理出口。
-- 从 `CF-Ray` 读取实际 POP，例如 `HKG`。
-
-配置示例：
+静态节点选择 `cf`，填入对端发布的完整 `kv_key`。按需选择 `detour` 指定 KV 查询和 WSS 的出口。面板会显示 WSS 实际接入的 Cloudflare POP，例如 `HKG`。[数据面配置](https://github.com/maxiloEmmmm/singbox-x#cf-mux) · [对端 daemon](https://github.com/maxiloEmmmm/tmp-proxy)
 
 ```yaml
 backend:
@@ -88,17 +40,9 @@ backend:
       detour: group.fast_cn
 ```
 
-`protocol: cf` 需要定制版 [singbox-x](https://github.com/maxiloEmmmm/singbox-x)。当前发布包仍携带官方 sing-box `1.13.12`，使用 CF Mux 时需要替换为兼容二进制。
-
 ## 安装
 
-从 [Releases](https://github.com/maxiloEmmmm/singbox-mini-panel/releases) 下载对应架构：
-
-```text
-linux-amd64.tgz
-linux-arm64.tgz
-linux-mipsle.tgz
-```
+在 [Releases](https://github.com/maxiloEmmmm/singbox-mini-panel/releases) 下载对应架构的 `linux-amd64.tgz`、`linux-arm64.tgz` 或 `linux-mipsle.tgz`。下面使用 ARM64 OpenWrt 安装包。
 
 ```bash
 tar -xzf linux-arm64.tgz
@@ -110,17 +54,15 @@ sboxctl install-openwrt
 /etc/init.d/sboxctl start
 ```
 
-面板默认地址：
+发布包内置官方 sing-box 1.13.12。使用 **CF 或 UU** 时，将 sboxctl 同目录下的 `sing-box` 替换为对应架构的定制内核，再重启 sboxctl。[singbox-x 构建说明](https://github.com/maxiloEmmmm/singbox-x#构建)
 
-```text
-http://<router-ip>:9000
-```
+## 配置与运行
+
+面板默认地址为 `http://<router-ip>:9000`。sboxctl 从 `/etc/sboxctl/config.yaml` 生成 `/etc/sing-box/config.json` 并启动内核。持久修改通过面板或 YAML 完成，生成的 JSON 会在应用时覆盖。
+
+sboxctl 优先使用同目录下的 `sing-box`，其次使用 `/usr/bin/sing-box`。在 Linux 上也可用 `sboxctl daemon` 前台运行。通过 systemd 部署 UU 时，若服务没有 `HOME`，为该服务设置 `SBOXCTL_UU_STATE_DIR`，指向仅服务账号可访问的持久凭据目录。
 
 ## 后续
 
-- [ ] 发布包直接集成 singbox-x。
-- [ ] 两端通过 TUN 和 CIDR 规则透明互联整个网段。
-- [ ] 完成双向网段路由的配置、观测与故障恢复闭环。
-- [ ] 在面板展示 CF session、重连、窗口压力和逻辑流数量。
-
-路线图只描述当前方向，不承诺发布日期。
+- [ ] 在发布包中集成 singbox-x。
+- [ ] 在面板展示 CF 会话重连、窗口压力和逻辑流数量。
